@@ -164,14 +164,16 @@ Two sources, both on hand in `~/playden-ps5`:
   item. The client first gives a resident Lapy service a bounded chance, then
   sends the packaged helper to the ELF loader on `127.0.0.1:9021`. It returns
   success only after a real `/data` write and read-back.
+- **Helper: the boilerplate's pin, as built.** `tools/build-lapy-helper.py`
+  (from the boilerplate) fetches `mpereiraesaa/PS5-Lapy-JB-Daemon` at
+  `54a095c` and builds the exact-title helper for `PPSA93475` with Payload
+  SDK **v0.40**; the app itself builds with the kit's SDK. `make` packages it
+  (`APP_LAPY_HELPER=1` by default) as `lapy.elf`, `lapy-manifest.json` and
+  `licenses/Lapy-MIT.txt`, and checks the manifest's hash and title. This is
+  the pin the boilerplate qualified with this exact client on 6.02 and 12.70.
+  Playden pins a later fork commit (`66ab4f1`, helper SDK v0.42) with its own
+  LGPL client; moving to it means moving the client too.
 - **Reference integration: Playden**, which ships this flow to users.
-  - Helper: the `mpereiraesaa/PS5-Lapy-JB-Daemon` fork at `66ab4f1`
-    (`owned_title_revision` in `dependencies.lock.json`). Build it with
-    `scripts/build-lapy-helper.sh <TITLE>` → `lapy.elf`. For us that is
-    `--title PPSA93475`; the helper refuses any other title.
-  - **SDK split:** the helper builds with Payload SDK **v0.42** (what its
-    foundation pins). The app itself builds with **v0.43**. Keep both pinned
-    with hashes, the way Playden's `scripts/fetch-deps.sh` does.
   - Startup order (`src/platform/ps5/native_startup.cpp`): bring up the
     network (the loader is reached over TCP), find `lapy.elf` in `/app0` (or
     `/data/homebrew/<ID>`) after checking the package identity, request the
