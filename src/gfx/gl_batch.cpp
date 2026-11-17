@@ -409,22 +409,21 @@ void GlBatch::draw(const DrawList &list, const Viewport &viewport, int surface_w
     for (GLuint program : {program_, mesh_program_})
     {
         glUseProgram(program);
-        glUniform4f(glGetUniformLocation(program, "u_viewport"), viewport.scale,
-                    viewport.offset_x, viewport.offset_y, 0.0f);
-        glUniform2f(glGetUniformLocation(program, "u_surface"),
-                    static_cast<float>(surface_width), static_cast<float>(surface_height));
+        glUniform4f(glGetUniformLocation(program, "u_viewport"), viewport.scale, viewport.offset_x,
+                    viewport.offset_y, 0.0f);
+        glUniform2f(glGetUniformLocation(program, "u_surface"), static_cast<float>(surface_width),
+                    static_cast<float>(surface_height));
     }
     glUseProgram(program_);
     glUniform1i(glGetUniformLocation(program_, "u_texture"), 0);
     // Font atlases on units 1..4 for the whole frame; unit 0 changes per run.
     const GLint font_units[kFontSlots] = {1, 2, 3, 4, 5, 6};
-    glUniform1iv(glGetUniformLocation(program_, "u_fonts[0]"),
-                 static_cast<GLsizei>(kFontSlots), font_units);
+    glUniform1iv(glGetUniformLocation(program_, "u_fonts[0]"), static_cast<GLsizei>(kFontSlots),
+                 font_units);
     for (std::uint32_t slot = 0; slot < kFontSlots; ++slot)
     {
         glActiveTexture(GL_TEXTURE1 + slot);
-        const std::uint32_t source =
-            font_count_ > 0 ? std::min(slot, font_count_ - 1) : 0;
+        const std::uint32_t source = font_count_ > 0 ? std::min(slot, font_count_ - 1) : 0;
         glBindTexture(GL_TEXTURE_2D, font_count_ > 0 ? font_textures_[source] : 0);
     }
     glActiveTexture(GL_TEXTURE0);
