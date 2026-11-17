@@ -27,3 +27,5 @@ src/ui/glyphs.cpp
 src/ui/pixel_font.cpp
 src/ui/theme.cpp
 src/ui/widgets.cpp
+src/disk/*.cpp
+src/third_party/stb/image.c
