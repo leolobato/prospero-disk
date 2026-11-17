@@ -25,7 +25,9 @@ On launch the app asks for sandbox elevation through Lapy: a resident Lapy
 service, or the ELF loader on port 9021, must be running. Without it the app
 shows a "Limited access" banner and offers only the volumes it can read.
 Scans are cached in `/data/prospero-disk/cache` (in the title's own storage
-when elevation failed).
+when elevation failed). Each launch also writes `probe.txt` next to the cache:
+the mounts, which volume and metadata paths are readable, and block counts
+for a few installed files (the elevation spike, PRD section 10).
 
 ## Building
 
@@ -55,7 +57,8 @@ paced by the tour's clock, so a scan in progress is the same picture on every
 run. Two environment variables change that:
 
 - `PD_VOLUMES="Home=/home/me;Usr=/usr"` scans real folders instead
-  (`PD_CACHE=<dir>` also caches them);
+  (`PD_CACHE=<dir>` also caches them, `PD_APP_DB=<file>` names an app.db
+  for title names);
 - `PE_SYSTEM_FONTS=<dir>` names a folder with fonts under the console's file
   names (`SSTJpPro-Regular.otf`, `SSTArabic-Medium.otf`, `SSTThai-Medium.otf`,
   ...) so other scripts draw on a PC too, and `PE_LANGUAGE=ja-JP` picks the
@@ -67,10 +70,11 @@ prints its time and totals; compare with `du -s --block-size=1 -x <path>`.
 
 ## Status
 
-Built and tested on a PC: the scanner, cache, layout, title lookup, text
-engine and every screen (pictures and tests). Not yet run on a console: the
-elevation (milestone M1 in the PRD), real volumes and mounts, the console's
-fonts, scan speed and frame rate. Console runs need the owner's go-ahead.
+Built and tested on a PC: the scanner, cache, layout, title lookup (param.json
+and app.db), text engine and every screen (pictures and tests). Not yet run on
+a console: the elevation and its probe (milestone M1 in the PRD), real volumes
+and mounts, the console's fonts, scan speed and frame rate. Console runs need
+the owner's go-ahead.
 
 ## License
 

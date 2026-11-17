@@ -12,6 +12,7 @@ kit's, followed by what Prospero Disk adds.
 | Lapy cooperative elevation client, from [ps5-native-app-boilerplate](https://github.com/blackbearreloaded/ps5-native-app-boilerplate) `f98de73` | `src/platform/ps5/elevation/` | GPL-3.0-or-later, Copyright (C) 2026 BlackBearReloaded |
 | ProsperoEden's text engine (baked font, console fonts, bidi) and system-language helper | `src/gfx/font.*`, `src/gfx/system_fonts.*`, `src/gfx/bidi.*`, `src/platform/ps5/system_language.hpp` | GPL-3.0-or-later, Copyright (C) 2026 BlackBearReloaded |
 | [HarfBuzz](https://github.com/harfbuzz/harfbuzz) 12.3.2, fetched by `tools/fetch-harfbuzz.sh` (hash pinned) and compiled through `src/third_party/harfbuzz/harfbuzz.cpp` | built into the app | "Old MIT" (its `COPYING`) |
+| [SQLite](https://www.sqlite.org) 3.46.1 amalgamation, fetched by `tools/fetch-sqlite.sh` (hash pinned) and compiled through `src/third_party/sqlite/sqlite.c`; reads the console's `app.db` read-only | built into the app | public domain |
 | [stb_truetype](https://github.com/nothings/stb) | `third_party/stb/stb_truetype.h`, compiled into `src/gfx/system_fonts.cpp` | public domain or MIT |
 | [stb_image](https://github.com/nothings/stb) (PNG only) | `src/third_party/stb/stb_image.h` | public domain or MIT |
 | The scanner's design follows [diskus](https://github.com/sharkdp/diskus) (parallel walk, one count per hard link); no diskus code is used | `src/disk/scanner.cpp` | (MIT/Apache-2.0, credited only) |
