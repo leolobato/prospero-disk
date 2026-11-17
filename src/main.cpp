@@ -32,6 +32,7 @@
 
 #include <cerrno>
 #include <cstring>
+#include <sys/stat.h>
 #include <unistd.h>
 #include <GL/glcorearb.h>
 
@@ -81,19 +82,92 @@ const char *elevation_status_name(elevation::Status status)
     return "unknown";
 }
 
-constexpr const char *kAssets = "/app0/assets";
-// Settings live in the title's own save area.
-constexpr const char *kDataRoot = "/download0/hui";
-// Development output (the tour's pictures and report, the log). A title's
-// sandbox has no /data, so it lives in the title's own storage. While the
-// title runs, a PC can *read* the folder over FTP as
-// /mnt/sandbox/<TITLE_ID>_000/download0/hui/dev, but cannot write there.
-constexpr const char *kDevRoot = "/download0/hui/dev";
-// Requests therefore come in through the install folder, which a PC can
-// write: /data/homebrew/<TITLE_ID>/dev/request.txt is /app0/dev/request.txt
-// here. One line: "tour <design id|all> <token>" or "quit - <token>". A
-// request is honoured once per token (the last one is remembered in kDevRoot).
-constexpr const char *kRequestPath = "/app0/dev/request.txt";
+// Where the app's own files are. Before the Lapy grant the title sees its
+// sandbox: the install folder is /app0 and its save area /download0. The grant
+// swaps the process to the console's root view, where neither path exists
+// (docs/platform/CONSOLE_NOTES.md): the install folder is then
+// /data/homebrew/<TITLE_ID>, and the app keeps its data in /data/prospero-disk.
+struct AppPaths
+{
+    std::string app;   // the install folder: assets/, sce_sys/, dev/request.txt
+    std::string data;  // settings
+    std::string dev;   // development output (the tour's pictures and report)
+    std::string probe; // probe.txt
+};
+
+// The sandbox layout, used when the grant fails (and on the first lines).
+// Settings live in the title's own save area. A PC can *read*
+// /mnt/sandbox/<TITLE_ID>_000/download0/hui/dev over FTP while the title runs,
+// but cannot write there; requests therefore come in through the install
+// folder: /data/homebrew/<TITLE_ID>/dev/request.txt. One line:
+// "tour <design id|all> <token>" or "quit - <token>". A request is honoured
+// once per token (the last one is remembered in the dev folder).
+AppPaths sandbox_paths()
+{
+    return {"/app0", "/download0/hui", "/download0/hui/dev", "/download0/prospero-disk"};
+}
+
+constexpr const char *kGrantedDataRoot = "/data/prospero-disk";
+
+// The value of a top-level string key in param.json text ("" when absent).
+std::string json_string(const std::string &text, const char *key)
+{
+    const std::string quoted = std::string("\"") + key + "\"";
+    const std::size_t at = text.find(quoted);
+    if (at == std::string::npos)
+        return {};
+    const std::size_t colon = text.find(':', at + quoted.size());
+    const std::size_t open = colon == std::string::npos ? colon : text.find('"', colon);
+    const std::size_t close = open == std::string::npos ? open : text.find('"', open + 1);
+    return close == std::string::npos ? std::string() : text.substr(open + 1, close - open - 1);
+}
+
+// After the grant: the first candidate install folder that holds the fonts.
+// "" when none does (the log then names every candidate).
+std::string find_app_root(const std::string &title_id)
+{
+    std::vector<std::string> candidates = {"/app0"};
+    if (!title_id.empty())
+    {
+        candidates.push_back("/data/homebrew/" + title_id);
+        candidates.push_back("/mnt/sandbox/" + title_id + "_000/app0");
+    }
+    for (const std::string &root : candidates)
+    {
+        const std::string probe = root + "/assets/fonts/inter-regular.huifont";
+        const bool ok = access(probe.c_str(), R_OK) == 0;
+        hui::sys::log("[HUI] app root candidate %s: %s", root.c_str(),
+                      ok ? "ok" : std::strerror(errno));
+        if (ok)
+            return root;
+    }
+    return {};
+}
+
+// Creates a folder for the app under /data. /data and what an FTP upload
+// leaves there are root's, and root has no DAC bypass on this console, so the
+// folder is made with the effective uid raised and then opened (0777) for the
+// app's own user and for FTP. Call only while no other thread runs: the
+// effective uid is per process.
+bool ensure_granted_directory(const std::string &path, uid_t app_user)
+{
+    const bool raise = geteuid() != 0 && seteuid(0) == 0;
+    bool ok = hui::save::ensure_directory(path);
+    int error = errno;
+    if (ok && chmod(path.c_str(), 0777) != 0)
+        hui::sys::log("[HUI] chmod %s failed: %s", path.c_str(), std::strerror(errno));
+    if (raise && seteuid(app_user) != 0)
+    {
+        // Everything after this would run as root and leave root-owned files
+        // the app cannot change later: stop before any thread starts.
+        hui::sys::log("[HUI] fatal: effective uid restore failed after %s: %s", path.c_str(),
+                      std::strerror(errno));
+        hui::sys::park();
+    }
+    if (!ok)
+        hui::sys::log("[HUI] directory %s failed: %s", path.c_str(), std::strerror(error));
+    return ok;
+}
 // How long a finished tour stays up so the PC can copy its evidence (the
 // storage is unmounted when the title closes) before the app closes itself.
 constexpr double kCollectSeconds = 240.0;
@@ -131,12 +205,17 @@ bool open_display(hui::ps5::Display &display, int *resolution)
     return display.open(Settings::kResolutions[0].width, Settings::kResolutions[0].height);
 }
 
-bool load_font(hui::gfx::Renderer &renderer, const char *name, hui::gfx::Font *font,
-               hui::ui::FontRef *ref, bool system_fonts = false)
+bool load_font(hui::gfx::Renderer &renderer, const std::string &assets, const char *name,
+               hui::gfx::Font *font, hui::ui::FontRef *ref, bool system_fonts = false)
 {
     std::string data;
-    const std::string path = std::string(kAssets) + "/fonts/" + name;
-    if (!hui::save::read_file(path, &data) || !font->load(data))
+    const std::string path = assets + "/fonts/" + name;
+    if (!hui::save::read_file(path, &data))
+    {
+        hui::sys::log("[HUI] font %s unreadable: %s", path.c_str(), std::strerror(errno));
+        return false;
+    }
+    if (!font->load(data))
     {
         hui::sys::log("[HUI] font %s failed: %s", name, font->error().c_str());
         return false;
@@ -199,6 +278,14 @@ int main()
     using namespace hui;
     sys::log("[HUI] entry");
 
+    // What the install folder says about itself, read while /app0 still exists.
+    std::string param_json;
+    (void)save::read_file("/app0/sce_sys/param.json", &param_json);
+    const std::string title_id = json_string(param_json, "titleId");
+    const std::string version = content_version(param_json);
+    sys::log("[HUI] title %s version %s", title_id.empty() ? "unknown" : title_id.c_str(),
+             version.empty() ? "unknown" : version.c_str());
+
     // Sandbox elevation (docs/PRD.md 7.2): once, before EGL or any other
     // thread exists. A failure leaves the app in its degraded mode.
     const std::int64_t started_us = sys::monotonic_us();
@@ -226,6 +313,42 @@ int main()
     sys::log("[HUI] elevation %s after %lld ms, euid %d", elevation.diagnostic.c_str(),
              static_cast<long long>((sys::monotonic_us() - started_us) / 1000),
              static_cast<int>(geteuid()));
+    // Where the app's files are from here on. Still single-threaded, so the
+    // effective uid may be raised to create the /data folders.
+    AppPaths paths = sandbox_paths();
+    if (elevation.granted)
+    {
+        paths.app = find_app_root(title_id);
+        const std::string data = kGrantedDataRoot;
+        // Without the folder nothing is saved (settings, the probe, the tour
+        // and its requests: an empty path turns each off), but the app runs.
+        paths.data.clear();
+        paths.dev.clear();
+        paths.probe.clear();
+        if (ensure_granted_directory(data, original_uid))
+        {
+            paths.data = data;
+            paths.probe = data;
+            (void)ensure_granted_directory(data + "/cache", original_uid);
+            if (ensure_granted_directory(data + "/dev", original_uid))
+                paths.dev = data + "/dev";
+        }
+    }
+    if (geteuid() != original_uid)
+    {
+        sys::log("[HUI] fatal: effective uid %d, expected %d", static_cast<int>(geteuid()),
+                 static_cast<int>(original_uid));
+        sys::park();
+    }
+    sys::log("[HUI] paths app=%s data=%s dev=%s", paths.app.c_str(), paths.data.c_str(),
+             paths.dev.c_str());
+    if (paths.app.empty())
+    {
+        sys::log("[HUI] fatal: the install folder is not visible after the grant");
+        sys::park();
+    }
+    const std::string assets = paths.app + "/assets";
+
     // What the elevation made readable (docs/PRD.md 10.1-3): to the log, and
     // beside the cache for FTP. The cache folder is the app's own (F11).
     {
@@ -237,15 +360,20 @@ int main()
                          static_cast<long long>((sys::monotonic_us() - started_us) / 1000),
                          text.c_str());
             });
-        const std::string dir =
-            elevation.granted ? "/data/prospero-disk" : "/download0/prospero-disk";
-        if (save::ensure_directory(dir))
-            (void)save::write_atomic(dir + "/probe.txt", report);
+        const std::string &dir = paths.probe;
+        if (!dir.empty() && save::ensure_directory(dir))
+        {
+            const std::string error = save::write_atomic(dir + "/probe.txt", report);
+            if (!error.empty())
+                sys::log("[HUI] probe.txt in %s failed: %s", dir.c_str(), error.c_str());
+        }
     }
-    sys::log("[HUI] storage dir=%d", save::ensure_directory(kDataRoot) ? 1 : 0);
+    const bool data_ok = !paths.data.empty() && save::ensure_directory(paths.data);
+    sys::log("[HUI] storage dir=%d%s%s", data_ok ? 1 : 0, data_ok ? "" : " ",
+             data_ok ? "" : std::strerror(errno));
 
     // The display opens at the saved resolution (1080p if that fails).
-    const Settings saved = app::Shell::load_settings(kDataRoot);
+    const Settings saved = app::Shell::load_settings(paths.data);
     int resolution = ps5::Display::supports_display_modes() ? saved.resolution : 0;
     ps5::Display display;
     if (!open_display(display, &resolution))
@@ -263,12 +391,12 @@ int main()
     gfx::Font hand;
     ui::Fonts fonts;
     if (!renderer.init() ||
-        !load_font(renderer, "inter-regular.huifont", &regular, &fonts.regular, true) ||
-        !load_font(renderer, "inter-semibold.huifont", &semibold, &fonts.semibold, true) ||
-        !load_font(renderer, "montserrat-medium.huifont", &display_font, &fonts.display) ||
-        !load_font(renderer, "dejavu-sans-mono.huifont", &mono, &fonts.mono) ||
-        !load_font(renderer, "press-start-2p.huifont", &pixel, &fonts.pixel) ||
-        !load_font(renderer, "patrick-hand.huifont", &hand, &fonts.hand))
+        !load_font(renderer, assets, "inter-regular.huifont", &regular, &fonts.regular, true) ||
+        !load_font(renderer, assets, "inter-semibold.huifont", &semibold, &fonts.semibold, true) ||
+        !load_font(renderer, assets, "montserrat-medium.huifont", &display_font, &fonts.display) ||
+        !load_font(renderer, assets, "dejavu-sans-mono.huifont", &mono, &fonts.mono) ||
+        !load_font(renderer, assets, "press-start-2p.huifont", &pixel, &fonts.pixel) ||
+        !load_font(renderer, assets, "patrick-hand.huifont", &hand, &fonts.hand))
     {
         sys::log("[HUI] fatal: renderer init failed");
         sys::park();
@@ -286,37 +414,38 @@ int main()
     audio::Mixer mixer;
     // The music stream attaches to the mixer before the audio thread starts.
     audio::MusicPlayer music;
-    const int tracks = music.init(mixer, std::string(kAssets) + "/audio/music",
-                                  static_cast<std::uint64_t>(sys::monotonic_us()));
+    const int tracks =
+        music.init(mixer, assets + "/audio/music", static_cast<std::uint64_t>(sys::monotonic_us()));
     sys::log("[HUI] music songs=%d", tracks);
     ps5::AudioOut audio_out;
     audio_out.start(mixer);
     audio::SoundBank sounds;
-    const auto bank = sounds.load(std::string(kAssets) + "/audio/sfx");
+    const auto bank = sounds.load(assets + "/audio/sfx");
     sys::log("[HUI] sounds files=%d rejected=%d", bank.files, bank.rejected);
     for (const std::string &error : bank.errors)
         sys::log("[HUI] sound rejected %s", error.c_str());
 
-    app::Shell shell(fonts, catalog, kDataRoot, renderer.glass_texture());
+    app::Shell shell(fonts, catalog, paths.data, renderer.glass_texture());
     shell.set_texture_factory([&renderer](int width, int height, const std::uint8_t *rgba)
                               { return renderer.batch().create_texture(width, height, rgba); });
-    const std::string version = read_content_version("/app0/sce_sys/param.json");
     shell.set_version(version);
     sys::log("[HUI] version %s designs=%zu", version.empty() ? "unknown" : version.c_str(),
              shell.concept_count());
 
     // A tour request turns this launch into an unattended validation run:
     // every design is shown with scripted input, pictures and a report are
-    // written to kDevRoot, and the app closes itself a while later.
+    // written to the dev folder, and the app closes itself a while later.
     std::unique_ptr<app::Tour> tour;
-    save::ensure_directory(kDevRoot);
-    const std::string handled_path = std::string(kDevRoot) + "/handled.txt";
-    const std::string report_path = std::string(kDevRoot) + "/tour/report.txt";
+    save::ensure_directory(paths.dev);
+    const std::string handled_path = paths.dev + "/handled.txt";
+    const std::string report_path = paths.dev + "/tour/report.txt";
     bool quit_requested = false;
     const auto poll_request = [&]()
     {
+        if (paths.dev.empty())
+            return;
         std::string request;
-        if (!save::read_file(kRequestPath, &request, 256))
+        if (!save::read_file(paths.app + "/dev/request.txt", &request, 256))
             return;
         char verb[16] = {};
         char argument[64] = {};
@@ -327,14 +456,19 @@ int main()
         save::read_file(handled_path, &handled, 128);
         if (handled == token)
             return; // this request was honoured by an earlier launch (or frame)
-        save::write_atomic(handled_path, token);
+        if (const std::string error = save::write_atomic(handled_path, token); !error.empty())
+        {
+            sys::log("[HUI] request %s ignored: %s cannot be written (%s)", token,
+                     handled_path.c_str(), error.c_str());
+            return;
+        }
         if (std::strcmp(verb, "quit") == 0)
         {
             quit_requested = true;
         }
         else if (std::strcmp(verb, "tour") == 0 && !tour)
         {
-            save::ensure_directory(std::string(kDevRoot) + "/tour");
+            save::ensure_directory(paths.dev + "/tour");
             std::remove(report_path.c_str()); // a new report must not be taken for an old one
             const bool all = std::strcmp(argument, "all") == 0;
             tour = std::make_unique<app::Tour>(shell, all ? std::string() : std::string(argument));
@@ -416,7 +550,7 @@ int main()
             glClear(GL_COLOR_BUFFER_BIT);
             renderer.present(capture.framebuffer(), kCaptureWidth, kCaptureHeight);
             glBindFramebuffer(GL_FRAMEBUFFER, capture.framebuffer());
-            const std::string path = std::string(kDevRoot) + "/tour/" + tour->capture() + ".bmp";
+            const std::string path = paths.dev + "/tour/" + tour->capture() + ".bmp";
             const bool ok = save_picture(path, kCaptureWidth, kCaptureHeight);
             glBindFramebuffer(GL_FRAMEBUFFER, 0);
             sys::log("[HUI] tour picture %s ok=%d", tour->capture().c_str(), ok ? 1 : 0);

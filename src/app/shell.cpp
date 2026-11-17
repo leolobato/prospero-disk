@@ -36,7 +36,8 @@ Settings Shell::load_settings(const std::string &data_root)
 {
     Settings settings;
     std::string data;
-    if (save::read_file(settings_path(data_root), &data))
+    // An empty data root means there is nowhere to keep settings.
+    if (!data_root.empty() && save::read_file(settings_path(data_root), &data))
     {
         const save::Decoded decoded = save::decode(save::Kind::settings, data);
         if (!decoded.ok || !decode_settings(decoded.payload, &settings))
@@ -80,6 +81,8 @@ bool Shell::take_settings_changed()
 
 void Shell::save_settings()
 {
+    if (data_root_.empty())
+        return; // nowhere to keep them (see load_settings)
     const std::string error =
         save::write_atomic(settings_path(data_root_),
                            save::encode(save::Kind::settings, 1, encode_settings(settings_)));

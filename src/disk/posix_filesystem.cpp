@@ -8,16 +8,44 @@
 #include <cstdio>
 #include <dirent.h>
 #include <sys/stat.h>
-#if !defined(__PROSPERO__)
+#if defined(__PROSPERO__)
+#include <cstring>
+#include <fcntl.h>
+#include <sys/mount.h>
+#else
 #include <sys/statvfs.h>
 #endif
 #include <unistd.h>
+
+#if defined(__PROSPERO__)
+extern "C" int sceKernelDlsym(int module, const char *name, void **address);
+#endif
 
 namespace hui::disk
 {
 
 namespace
 {
+
+#if defined(__PROSPERO__)
+// statfs, fstatfs and statvfs are libkernel_sys exports, which an app process
+// is not given: calling them jumps through a null import and ends the process
+// (CE-108255-1). The app's own libkernel exports the same call as _fstatfs;
+// resolve it by name instead (docs/platform/CONSOLE_NOTES.md).
+using Fstatfs = int (*)(int, struct statfs *);
+
+Fstatfs resolved_fstatfs()
+{
+    static const Fstatfs query = []
+    {
+        void *symbol = nullptr;
+        if (sceKernelDlsym(0x2001, "_fstatfs", &symbol) != 0)
+            return Fstatfs{};
+        return reinterpret_cast<Fstatfs>(symbol);
+    }();
+    return query;
+}
+#endif
 
 EntryType type_of(mode_t mode)
 {
@@ -101,11 +129,24 @@ class PosixFileSystem final : public FileSystem
         if (!allow_space_)
             return false;
 #if defined(__PROSPERO__)
-        // statfs ends the process on the console (13.60), elevated or not and
-        // on any path (docs/PRD.md 10): volume sizes are unknown there.
-        (void)path;
-        (void)out;
-        return false;
+        const Fstatfs query = resolved_fstatfs();
+        if (query == nullptr)
+            return false;
+        const int fd = open(path.c_str(), O_RDONLY | O_DIRECTORY);
+        if (fd < 0)
+            return false;
+        struct statfs info;
+        std::memset(&info, 0, sizeof info);
+        const bool ok = query(fd, &info) == 0;
+        close(fd);
+        if (!ok || info.f_bsize == 0)
+            return false;
+        const std::uint64_t unit = info.f_bsize;
+        out->total = static_cast<std::uint64_t>(info.f_blocks) * unit;
+        out->free = static_cast<std::uint64_t>(info.f_bavail < 0 ? 0 : info.f_bavail) * unit;
+        const std::uint64_t unused = static_cast<std::uint64_t>(info.f_bfree) * unit;
+        out->used = out->total > unused ? out->total - unused : 0u;
+        return true;
 #else
         struct statvfs vfs
         {

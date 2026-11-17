@@ -266,12 +266,14 @@ def main():
         done.set()
         stop(f"the launch helper failed: {launch.stderr.strip() or launch.stdout.strip()}")
 
-    # The app's own storage is mounted only while the title runs, and a PC
-    # can read it through the title's sandbox. So: wait for the app to come
-    # up and take the request, wait for its report, copy the evidence, and
-    # wait for the app to close itself (it does a few minutes after the tour).
-    dev = f"/mnt/sandbox/{title}_000/download0/hui/dev"
-    report_path = f"{dev}/tour/report.txt"
+    # Where the app writes its evidence: /data/prospero-disk/dev after the
+    # Lapy grant (docs/platform/CONSOLE_NOTES.md), else its own storage, which
+    # a PC reads through the title's sandbox while the title runs. So: wait
+    # for the app to come up and take the request (that tells which folder it
+    # uses), wait for its report, copy the evidence, and wait for the app to
+    # close itself (it does a few minutes after the tour).
+    candidates = ["/data/prospero-disk/dev", f"/mnt/sandbox/{title}_000/download0/hui/dev"]
+    dev = candidates[0]
 
     def connect():
         try:
@@ -284,14 +286,18 @@ def main():
     while time.time() - started < 90:
         time.sleep(3)
         console = connect()
-        taken = (console.read(f"{dev}/handled.txt") or b"").decode().strip() == token
+        for candidate in candidates:
+            if (console.read(f"{candidate}/handled.txt") or b"").decode().strip() == token:
+                dev, taken = candidate, True
+                break
         console.close()
         if taken:
             break
     if not taken:
         done.set()
         stop("the app did not take the tour request (it may be running: close it by hand)")
-    say("The app is up and touring")
+    say(f"The app is up and touring (evidence in {dev})")
+    report_path = f"{dev}/tour/report.txt"
 
     finished = False
     while time.time() - started < timeout:
@@ -317,7 +323,8 @@ def main():
         done.set()
         stop("report.txt could not be read back; the app closes by itself in a few minutes")
     (results / "report.txt").write_bytes(data)
-    log = console.read(f"{dev}/app.log") or b""
+    # The log is opened before the Lapy grant, so it is always in the sandbox.
+    log = console.read(f"{candidates[-1]}/app.log") or b""
     (results / "app.log").write_bytes(log)
     pictures = []
     try:

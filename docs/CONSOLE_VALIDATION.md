@@ -9,10 +9,15 @@ exactly that, so a validation takes one launch and no controller.
 
 Two facts about a title's sandbox shape the mechanism:
 
-- It has no `/data`. The app's output (log, pictures, report) goes to its own
-  storage, `/download0/hui/dev`, which exists only while the title runs. A PC
-  can *read* it over FTP as `/mnt/sandbox/<TITLE_ID>_000/download0/hui/dev`,
-  but cannot write there.
+- Prospero Disk asks for the Lapy grant at launch. Once granted, its pictures
+  and report go to `/data/prospero-disk/dev`, and its install folder is
+  `/data/homebrew/<TITLE_ID>` (`/app0` is gone; see
+  [platform/CONSOLE_NOTES.md](platform/CONSOLE_NOTES.md)). Without the grant
+  the sandbox has no `/data`: the output goes to the title's own storage,
+  `/download0/hui/dev`, which exists only while the title runs. A PC can *read*
+  it over FTP as `/mnt/sandbox/<TITLE_ID>_000/download0/hui/dev`, but cannot
+  write there. The log (`app.log`) is always in that sandbox folder: it is
+  opened before the grant.
 - The install folder is writable from a PC and the app sees it as `/app0`.
   So requests travel that way: `/data/homebrew/<TITLE_ID>/dev/request.txt`
   holds one line, `tour <design id|all> <token>` or `quit - <token>`. The app

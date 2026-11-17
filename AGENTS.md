@@ -295,6 +295,9 @@ Facts about a title's sandbox that the tooling depends on:
 
 - It has no `/data`. The app writes its log, pictures and report to its own
   storage (`/download0/hui/dev`), which is mounted only while it runs.
+  Prospero Disk differs once the Lapy grant succeeds: pictures and report go
+  to `/data/prospero-disk/dev` and only the log stays in the sandbox
+  ([docs/platform/CONSOLE_NOTES.md](docs/platform/CONSOLE_NOTES.md)).
 - From a PC that storage is `/mnt/sandbox/<TITLE_ID>_000/download0/hui/dev`:
   FTP can read it, not write it.
 - The install folder `/data/homebrew/<TITLE_ID>` is writable from a PC and is

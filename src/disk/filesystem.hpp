@@ -68,9 +68,10 @@ class FileSystem
     }
 };
 
-// The real file system through opendir, lstat and statvfs. With
-// allow_space false, space() always fails: a PS5 title's sandbox ends the
-// process on statfs (seen on 13.60), so it is only asked once elevated.
+// The real file system through opendir, lstat and statvfs (on the console,
+// _fstatfs resolved through sceKernelDlsym: the plain statfs import ends the
+// process). With allow_space false, space() always fails; the console asks
+// for sizes only once elevated.
 std::unique_ptr<FileSystem> make_posix_filesystem(bool allow_space = true);
 
 // A made-up volume for the PC preview, the tour and the tests: the same tree

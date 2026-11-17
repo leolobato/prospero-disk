@@ -61,11 +61,23 @@ void probe_path(std::string &out, const std::string &path, bool elevated)
     }
     else
         list_error = errno;
-    // No statfs: it ends the process on the console, elevated or not.
-    (void)elevated;
     line(out, "path %s stat=%s(errno %d) dev=%llu list=%d(errno %d)", path.c_str(),
          stat_ok ? "ok" : "fail", stat_error, static_cast<unsigned long long>(st.st_dev), entries,
          list_error);
+    // Sizes through _fstatfs (the plain statfs import ends the process), only
+    // once elevated: before the grant it failed with ENOSYS on Playden's title.
+    if (elevated && entries >= 0)
+    {
+        line(out, "  _fstatfs %s", path.c_str());
+        disk::SpaceInfo space;
+        if (disk::make_posix_filesystem(true)->space(path, &space))
+            line(out, "space %s total=%llu used=%llu free=%llu", path.c_str(),
+                 static_cast<unsigned long long>(space.total),
+                 static_cast<unsigned long long>(space.used),
+                 static_cast<unsigned long long>(space.free));
+        else
+            line(out, "space %s unavailable (errno %d)", path.c_str(), errno);
+    }
 }
 
 // st_blocks x 512 against st_size for the first regular files under a folder:
@@ -122,7 +134,7 @@ std::string probe_storage(bool elevated, const std::function<void(const std::str
     budget = 3;
     probe_blocks(out, "/mnt/usb0", 2, &budget);
 
-    line(out, "statfs and getfsstat not called: they end the process on this console");
+    line(out, "getfsstat not called: a libkernel_sys import, like statfs");
     g_emit = nullptr;
     return out;
 }

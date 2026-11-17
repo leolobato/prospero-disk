@@ -15,9 +15,9 @@ namespace hui::ps5
 // st_size for one installed file. Read-only; takes well under a second.
 // Each line goes to emit as soon as it is known, so that a call the sandbox
 // refuses by killing the process still leaves the lines before it in the log.
-// getfsstat runs last for that reason.
-// statfs and getfsstat run only when elevated: the sandbox ends the process
-// on them.
+// statfs and getfsstat are never called directly: they are libkernel_sys
+// imports, null in an app, and end the process. Sizes come from _fstatfs
+// resolved through sceKernelDlsym, only once elevated.
 std::string probe_storage(bool elevated, const std::function<void(const std::string &)> &emit);
 
 } // namespace hui::ps5
