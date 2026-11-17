@@ -90,9 +90,12 @@ std::vector<Segment> layout_sunburst(const Tree &tree, std::uint32_t centre,
                     next.push_back({child, branch, at, sweep});
                 at += sweep;
             }
-            if (small_bytes != 0)
+            const auto small_sweep =
+                static_cast<float>(static_cast<double>(small_bytes) * per_byte);
+            // A group too thin to see would only draw a hairline.
+            if (small_bytes != 0 && small_sweep >= options.min_sweep * 0.5f)
             {
-                const auto sweep = static_cast<float>(static_cast<double>(small_bytes) * per_byte);
+                const float sweep = small_sweep;
                 out.push_back(
                     {SegmentKind::smaller, p.node, ring, p.branch, at, sweep, small_bytes});
                 at += sweep;

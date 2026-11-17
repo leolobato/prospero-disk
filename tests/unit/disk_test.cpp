@@ -171,7 +171,7 @@ TEST(DiskScanner, SameTotalsWithOneOrManyThreads)
 
 TEST(DiskScanner, CancelLeavesNoTree)
 {
-    const auto fs = make_fixture_filesystem(2000);
+    const auto fs = make_fixture_filesystem(1.0); // paced, never advanced
     Scanner scanner;
     ScanOptions options;
     options.root = kFixtureRoot;
@@ -341,6 +341,20 @@ TEST(DiskCache, RoundTripsAndRejectsDamage)
     EXPECT_FALSE(decode_cache(newer, &back));
     EXPECT_FALSE(decode_cache(bytes.substr(0, bytes.size() - 1), &back));
     EXPECT_FALSE(decode_cache("", &back));
+
+    char dir[] = "/tmp/pd-cache-XXXXXX";
+    ASSERT_NE(mkdtemp(dir), nullptr);
+    const std::string nested = std::string(dir) + "/a/b";
+    EXPECT_EQ(save_cache(nested, info, *tree), "");
+    CacheInfo header;
+    ASSERT_TRUE(read_cache_info(cache_path(nested, "internal"), &header));
+    EXPECT_EQ(header.scanned_at, info.scanned_at);
+    EXPECT_EQ(header.volume_key, "internal");
+    CachedScan loaded;
+    ASSERT_TRUE(load_cache(cache_path(nested, "internal"), &loaded));
+    EXPECT_EQ(loaded.tree->size(), tree->size());
+    EXPECT_FALSE(read_cache_info(nested + "/missing.pdc", &header));
+    EXPECT_EQ(std::system(("rm -rf '" + std::string(dir) + "'").c_str()), 0);
 
     EXPECT_EQ(cache_path("/data/pd", "usb0"), "/data/pd/usb0.pdc");
     EXPECT_EQ(cache_path("/c", "../x"), "/c/x.pdc");

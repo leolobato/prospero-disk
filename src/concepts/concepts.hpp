@@ -15,7 +15,8 @@ namespace hui::concepts
 // To add a design: write the file, declare its factory here and list it in
 // registry.cpp. Nothing else in the app needs to change.
 std::unique_ptr<app::Concept> make_disk(app::Context &context);
-// The kit's Component Library, kept as a reference while the app is built.
+// The kit's Component Library: not in the app; its pages back the component
+// tests and it can be registered again to browse the components.
 std::unique_ptr<app::Concept> make_components(app::Context &context);
 
 } // namespace hui::concepts

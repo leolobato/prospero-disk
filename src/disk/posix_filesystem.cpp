@@ -1,4 +1,4 @@
-// Prospero Disk - The real file system through opendir, fstatat and statvfs.
+// Prospero Disk - The real file system through opendir, lstat and statvfs.
 // Copyright (C) 2026 Leonardo Lobato
 // SPDX-License-Identifier: GPL-3.0-or-later
 
@@ -7,7 +7,6 @@
 #include <cerrno>
 #include <cstdio>
 #include <dirent.h>
-#include <fcntl.h>
 #include <sys/stat.h>
 #include <sys/statvfs.h>
 #include <unistd.h>
@@ -52,17 +51,22 @@ class PosixFileSystem final : public FileSystem
             *error = errno;
             return false;
         }
-        const int fd = dirfd(dir);
-        // readdir on its own DIR is safe across threads; each thread opens its own.
+        // lstat by full path: the console's libc has neither dirfd nor fstatat.
+        std::string full = path;
+        if (full.empty() || full.back() != '/')
+            full.push_back('/');
+        const std::size_t base = full.size();
         for (dirent *d = readdir(dir); d != nullptr; d = readdir(dir))
         {
             const char *name = d->d_name;
             if (name[0] == '.' && (name[1] == 0 || (name[1] == '.' && name[2] == 0)))
                 continue;
+            full.resize(base);
+            full.append(name);
             struct stat st
             {
             };
-            if (fstatat(fd, name, &st, AT_SYMLINK_NOFOLLOW) != 0)
+            if (lstat(full.c_str(), &st) != 0)
                 continue; // removed while we read: it no longer uses space
             Entry entry;
             entry.name = name;

@@ -52,6 +52,7 @@ bool Scanner::start(const FileSystem &fs, ScanOptions options)
         return false;
 
     fs_ = &fs;
+    fs.begin();
     options_ = std::move(options);
     options_.threads = std::clamp(options_.threads, 1, 32);
     root_device_ = root.device;
@@ -92,6 +93,8 @@ void Scanner::cancel()
         cancel_ = true;
     }
     queue_cv_.notify_all();
+    if (fs_ != nullptr)
+        fs_->release();
 }
 
 void Scanner::join()

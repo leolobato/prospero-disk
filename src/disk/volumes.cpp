@@ -110,8 +110,8 @@ Environment make_environment()
     }
     else
     {
-        // Slow enough per folder for the tour to photograph a scan in progress.
-        env.fs = make_fixture_filesystem(1500);
+        // Paced by the screen's clock, so the tour photographs a scan in progress.
+        env.fs = make_fixture_filesystem(45.0);
         env.specs = {{"internal", "Internal", kFixtureRoot, VolumeKind::internal},
                      {"usb0", "USB 1", kFixtureUsbRoot, VolumeKind::usb}};
         env.appmeta_roots = {std::string(kFixtureRoot) + "/appmeta"};

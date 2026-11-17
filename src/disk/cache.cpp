@@ -7,6 +7,7 @@
 #include "core/save_file.hpp"
 
 #include <cctype>
+#include <cstdio>
 #include <cstring>
 
 namespace hui::disk
@@ -109,6 +110,42 @@ bool decode_cache(std::string_view bytes, CachedScan *out)
     scan.tree = std::move(tree);
     *out = std::move(scan);
     return true;
+}
+
+bool read_cache_info(const std::string &path, CacheInfo *out)
+{
+    std::FILE *file = std::fopen(path.c_str(), "rb");
+    if (file == nullptr)
+        return false;
+    Header h{};
+    char key[256];
+    bool ok = std::fread(&h, sizeof h, 1, file) == 1 && h.magic == kCacheMagic &&
+              h.version == kCacheVersion && h.key_size <= sizeof key &&
+              (h.key_size == 0 || std::fread(key, h.key_size, 1, file) == 1);
+    std::fclose(file);
+    if (!ok)
+        return false;
+    out->volume_key.assign(key, h.key_size);
+    out->space = {h.total, h.used, h.free};
+    out->scanned_at = h.scanned_at;
+    out->duration_ms = h.duration_ms;
+    out->unreadable = h.unreadable;
+    return true;
+}
+
+bool load_cache(const std::string &path, CachedScan *out)
+{
+    std::string bytes;
+    return save::read_file(path, &bytes, 1ull << 31) && decode_cache(bytes, out);
+}
+
+std::string save_cache(const std::string &dir, const CacheInfo &info, const Tree &tree)
+{
+    for (std::size_t at = 1; at <= dir.size(); ++at)
+        if (at == dir.size() || dir[at] == '/')
+            if (!save::ensure_directory(dir.substr(0, at)))
+                return "cannot create " + dir.substr(0, at);
+    return save::write_atomic(cache_path(dir, info.volume_key), encode_cache(info, tree));
 }
 
 std::string cache_path(const std::string &dir, std::string_view volume_key)

@@ -53,16 +53,30 @@ class FileSystem
     virtual bool space(const std::string &path, SpaceInfo *out) const = 0;
     virtual bool read_file(const std::string &path, std::string *out,
                            std::size_t max_bytes) const = 0;
+    // The screen's clock moved on: a paced fixture lets more folders through.
+    virtual void advance(double seconds) const
+    {
+        (void)seconds;
+    }
+    // A scan starts: a paced fixture forgets the time that passed before it.
+    virtual void begin() const
+    {
+    }
+    // A scan was cancelled: stop holding back calls that wait for advance().
+    virtual void release() const
+    {
+    }
 };
 
-// The real file system through opendir, fstatat and statvfs.
+// The real file system through opendir, lstat and statvfs.
 std::unique_ptr<FileSystem> make_posix_filesystem();
 
 // A made-up volume for the PC preview, the tour and the tests: the same tree
 // every time, with invented titles under user/app and the appmeta files that
-// name them. It answers slowly enough (delay_us per folder) for a scan to be
-// seen growing.
-std::unique_ptr<FileSystem> make_fixture_filesystem(std::uint32_t delay_us = 0);
+// name them. With folders_per_second > 0 it lists that many folders per second
+// of advance(): a tour runs on simulated time, so a scan "in progress" is the
+// same picture on every run however fast the PC is.
+std::unique_ptr<FileSystem> make_fixture_filesystem(double folders_per_second = 0.0);
 
 // The fixture's two volumes: an internal drive and a USB drive.
 inline constexpr const char *kFixtureRoot = "/fixture/user";

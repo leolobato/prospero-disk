@@ -6,12 +6,14 @@
 
 #include "disk/png.hpp"
 
+#include <algorithm>
 #include <cerrno>
 #include <chrono>
 #include <cstdio>
 #include <map>
 #include <set>
-#include <thread>
+#include <condition_variable>
+#include <mutex>
 
 namespace hui::disk
 {
@@ -80,15 +82,58 @@ constexpr FakeTitle kTitles[] = {
 class FixtureFileSystem final : public FileSystem
 {
   public:
-    explicit FixtureFileSystem(std::uint32_t delay_us) : delay_us_(delay_us)
+    explicit FixtureFileSystem(double folders_per_second) : rate_(folders_per_second)
     {
         build();
     }
 
+    void advance(double seconds) const override
+    {
+        if (rate_ <= 0.0)
+            return;
+        {
+            std::lock_guard<std::mutex> lock(pace_mutex_);
+            budget_ += seconds * rate_;
+        }
+        pace_cv_.notify_all();
+    }
+
+    void begin() const override
+    {
+        std::lock_guard<std::mutex> lock(pace_mutex_);
+        budget_ = 0.0;
+        released_ = false;
+        scanning_ = true;
+    }
+
+    void release() const override
+    {
+        {
+            std::lock_guard<std::mutex> lock(pace_mutex_);
+            released_ = true;
+            scanning_ = false;
+        }
+        pace_cv_.notify_all();
+    }
+
+    // Only a scan is paced: listing the volumes at launch is not.
+    bool pacing() const
+    {
+        std::lock_guard<std::mutex> lock(pace_mutex_);
+        return scanning_;
+    }
+
     bool list(const std::string &path, std::vector<Entry> *out, int *error) const override
     {
-        if (delay_us_ != 0)
-            std::this_thread::sleep_for(std::chrono::microseconds(delay_us_));
+        if (rate_ > 0.0 && pacing())
+        {
+            // Wait for the screen's clock. The long real-time limit only
+            // guards a caller that neither advances nor releases.
+            std::unique_lock<std::mutex> lock(pace_mutex_);
+            pace_cv_.wait_for(lock, std::chrono::seconds(10),
+                              [this] { return budget_ >= 1.0 || released_; });
+            budget_ = budget_ >= 1.0 ? budget_ - 1.0 : 0.0;
+        }
         out->clear();
         if (unreadable_.count(path) != 0)
         {
@@ -334,7 +379,12 @@ class FixtureFileSystem final : public FileSystem
     }
 
     static constexpr std::int64_t kNow = 1794931200; // 2026-11-17 16:00 UTC
-    std::uint32_t delay_us_;
+    double rate_;
+    mutable std::mutex pace_mutex_;
+    mutable std::condition_variable pace_cv_;
+    mutable double budget_ = 0.0;
+    mutable bool released_ = false;
+    mutable bool scanning_ = false;
     std::uint64_t inode_ = 100;
     std::uint64_t seed_ = 0x5eed;
     std::map<std::string, std::vector<Entry>> dirs_;
@@ -345,9 +395,9 @@ class FixtureFileSystem final : public FileSystem
 
 } // namespace
 
-std::unique_ptr<FileSystem> make_fixture_filesystem(std::uint32_t delay_us)
+std::unique_ptr<FileSystem> make_fixture_filesystem(double folders_per_second)
 {
-    return std::make_unique<FixtureFileSystem>(delay_us);
+    return std::make_unique<FixtureFileSystem>(folders_per_second);
 }
 
 } // namespace hui::disk

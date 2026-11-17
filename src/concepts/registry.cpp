@@ -11,7 +11,6 @@ std::span<const ConceptFactory> concept_registry()
 {
     static constexpr ConceptFactory kFactories[] = {
         concepts::make_disk,
-        concepts::make_components,
     };
     return kFactories;
 }

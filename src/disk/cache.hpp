@@ -42,4 +42,13 @@ bool decode_cache(std::string_view bytes, CachedScan *out);
 // "<dir>/<key>.pdc"; the key keeps letters, digits, '-' and '_' only.
 std::string cache_path(const std::string &dir, std::string_view volume_key);
 
+// Reads only the header of a cache file: enough for "scanned 2 h ago" at
+// launch without loading the tree.
+bool read_cache_info(const std::string &path, CacheInfo *out);
+// Reads and decodes a whole cache file.
+bool load_cache(const std::string &path, CachedScan *out);
+// Creates dir (and its parents) and writes the file atomically. The only
+// place the app writes (PRD F11). Returns an error message or "".
+std::string save_cache(const std::string &dir, const CacheInfo &info, const Tree &tree);
+
 } // namespace hui::disk
