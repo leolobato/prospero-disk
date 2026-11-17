@@ -6,6 +6,7 @@
 | **Name** | Prospero Disk |
 | **Platform** | Jailbroken PS5, native app (`eboot.bin` + `sce_sys/param.json`), OpenGL 4.6 via ps5-opengl |
 | **Store category** | `utilities` |
+| **License** | GPL-3.0-or-later, like ProsperoEden and the kit (§8) |
 | **Status** | Draft v1 — 2026-11-17 |
 
 ## 1. Summary
@@ -151,12 +152,45 @@ similar locations.
 
 ### 7.2 Sandbox elevation (Lapy)
 
-- Port the exact-title Lapy helper packaging and the `elevation` client from
-  **ProsperoStore**. It pins Payload SDK v0.43 and has been validated on firmware
-  13.60. The template doesn't wire `APP_LAPY_HELPER` today, so this port is a
-  work item.
-- Call `elevation::request(filesystem)` **once, single-threaded, before any
-  scanner thread starts**.
+Two sources, both on hand in `~/playden-ps5`:
+
+- **Client and packaging: `ps5-native-app-boilerplate`**
+  (`third_party/ps5-native-app-boilerplate`, `f98de73`). The kit's own
+  foundation. `examples/sandbox-elevation/` holds the cooperative client
+  (`elevation::request(elevation::Capability::filesystem)`, GPL-3.0-or-later
+  like the kit). The boilerplate `Makefile` has the `APP_LAPY_HELPER=1` path,
+  which builds the exact-title helper, checks its manifest and packages it. The
+  kit's template doesn't wire `APP_LAPY_HELPER` yet, so porting this is a work
+  item. The client first gives a resident Lapy service a bounded chance, then
+  sends the packaged helper to the ELF loader on `127.0.0.1:9021`. It returns
+  success only after a real `/data` write and read-back.
+- **Reference integration: Playden**, which ships this flow to users.
+  - Helper: the `mpereiraesaa/PS5-Lapy-JB-Daemon` fork at `66ab4f1`
+    (`owned_title_revision` in `dependencies.lock.json`). Build it with
+    `scripts/build-lapy-helper.sh <TITLE>` → `lapy.elf`. For us that is
+    `--title PPSA93475`; the helper refuses any other title.
+  - **SDK split:** the helper builds with Payload SDK **v0.42** (what its
+    foundation pins). The app itself builds with **v0.43**. Keep both pinned
+    with hashes, the way Playden's `scripts/fetch-deps.sh` does.
+  - Startup order (`src/platform/ps5/native_startup.cpp`): bring up the
+    network (the loader is reached over TCP), find `lapy.elf` in `/app0` (or
+    `/data/homebrew/<ID>`) after checking the package identity, request the
+    grant, then open EGL. EGL creates threads, and the helper needs a
+    single-threaded process.
+  - After the grant, Playden restores the original effective UID, so the files
+    it writes aren't root-owned. It then waits about 1 s for the helper to
+    settle.
+  - Every failure records `stage`, `status` and `error`, and the startup screen
+    shows them. We do the same in the degraded-mode banner.
+  - Playden's own client (`prospero-win/native/pw_lapy_elevation.c`) is
+    LGPL-2.1 and adds `request_for` for child processes. We don't need that;
+    use the boilerplate client.
+- **Firmware:** upstream Lapy validated the resident service on 12.02. The
+  boilerplate qualified the pinned helper on 6.02 and 12.70 (2026-10-04).
+  Playden users report it working on firmware up to 13.60. Treat other
+  firmware as unverified, and confirm 13.60 in M1.
+- Call `elevation::request(filesystem)` **once, single-threaded, before EGL
+  and before any scanner thread starts**.
 - On failure, run in degraded mode (§5.1). Never retry in a loop.
 
 ### 7.3 Scanner
@@ -191,9 +225,35 @@ similar locations.
 ### 7.5 Text
 
 The kit's baked fonts are ASCII-only. Game titles and file names contain
-Japanese, Cyrillic, accented Latin and other scripts. Adopt ProsperoEden's
-console-font engine, or at least the kit's `european` glyph set. ProsperoRadio
-took the first approach (`ADOPTING.md`, "What the first adoption taught").
+Japanese, Cyrillic, accented Latin and other scripts. Adopt **ProsperoEden's
+text engine**, the way ProsperoRadio did (`ADOPTING.md`, "What the first
+adoption taught"):
+
+- Source: `ssh://git@10.0.1.9:222/leolobato/ProsperoEden.git`, directory
+  `headless/prosperoeden/pe/gfx/`. Take `font.*`, `font_format.hpp`,
+  `system_fonts.*`, `harfbuzz.cpp` and `bidi.*`, and replace the kit's
+  `gfx/font.*` with them. GPL-3.0-or-later, the same as the kit. The code
+  started in ProsperoPuzzles, which the kit also descends from.
+- The baked atlas (Montserrat in Eden; we re-bake it from the kit's Inter)
+  covers Latin and Cyrillic. Japanese, Korean, Chinese, Greek, Thai and Arabic
+  come from the console's own fonts in `/preinst/common/font` (SST, SSTJpPro,
+  YoonGothic, DFHEI5 and others). The app ships none of them. Each font file
+  is read the first time one of its characters is needed, and glyphs become
+  distance fields like the baked ones. Font choice follows the system language
+  (`third_party/ps5_system_language.hpp`), so shared CJK characters take the
+  user's regional forms.
+- HarfBuzz 12.3.2 (MIT), pinned by hash in Eden's `tools/deps.json`, does the
+  shaping. `bidi.*` handles right-to-left order.
+- Add an upload of the atlas rows that changed each frame (ProsperoRadio's
+  addition).
+- The first glyph of a new script costs one frame of about 110 ms while the
+  font file is read. Warm the scripts that the scanned names and the title
+  names use while the splash or the scan screen is up, not during Explore.
+- Host snapshots: set `PE_SYSTEM_FONTS` to a folder with copies of the
+  console fonts. Don't commit those fonts.
+- Spike (§10): can the app read `/preinst/common/font` without elevation? If
+  not, the degraded mode falls back to the baked atlas only.
+
 Characters that can't be drawn render as a visible placeholder, never as a
 blank.
 
@@ -208,9 +268,12 @@ blank.
 
 ## 8. Distribution (ProsperoStore)
 
-- Public GitHub repository with a license (MIT, matching the kit and Lapy) and
-  `THIRD_PARTY_NOTICES.md` (kit fonts and sounds, Lapy's MIT license, the font
-  engine).
+- Public GitHub repository under **GPL-3.0-or-later**. That is a requirement,
+  not a choice: the kit and `ps5-native-app-boilerplate` are both
+  GPL-3.0-or-later, and so are the elevation client and ProsperoEden's text
+  engine. Ship a
+  `THIRD_PARTY_NOTICES.md` (the kit's notices, kit fonts and sounds, Lapy's MIT
+  license for the helper ELF, the font engine).
 - Release: a tagged GitHub release with a `.zip` of the app folder. Raise
   `contentVersion` in `sce_sys/param.json` in every release.
 - `sce_sys/icon0.png` at 512×512, `pic0`/`pic1` backgrounds, `snd0.at9`.
@@ -236,7 +299,8 @@ blank.
 ## 10. Open questions / spikes
 
 1. **What elevation actually grants.** Lapy's proof covers only `/data`
-   read/write. On-console spike: which of `/user`, `/system_data`, `/system`,
+   read/write, and Playden relies on nothing beyond `/data` either, so no
+   shipping app tells us more. On-console spike: which of `/user`, `/system_data`, `/system`,
    `/mnt/ext*` and `/mnt/usb*` become readable, and does `statfs` work on each?
    This defines the volume list and the degraded mode.
 2. **Mount layout.** List the real mounts (`getmntinfo`) on a console. Confirm
@@ -248,15 +312,17 @@ blank.
 4. **`internalOnly`.** Does the helper flow or the `/data` cache require
    installing on internal storage?
 5. **Scan speed on PS5.** Measure the thread-count sweet spot per volume kind.
+6. **System fonts while sandboxed.** Is `/preinst/common/font` readable
+   without the grant (§7.5)? This decides what the degraded mode can show.
 
 ## 11. Milestones
 
 | # | Milestone | Done when |
 | --- | --- | --- |
 | M0 | Fork and identity | The app builds as `PPSA93475` "Prospero Disk" with the gallery removed. Host snapshots run. |
-| M1 | Elevation spike | The Lapy helper is ported from ProsperoStore. A console run logs the readable paths and mounts (answers §10.1–3). |
+| M1 | Elevation spike | The boilerplate elevation client and the `PPSA93475` Lapy helper are ported, following Playden's startup order (§7.2). A console run logs the readable paths and mounts (answers §10.1–3). |
 | M2 | Scanner core | The parallel walker, hardlink dedupe, roll-up and the arena exist. Unit tests are green. A host benchmark on a large directory runs. |
 | M3 | Explore UI | Volumes screen, progressive sunburst, list, navigation and detail panel, in host snapshots. |
-| M4 | Titles and text | appmeta/app.db resolution, icons, non-ASCII font coverage. |
+| M4 | Titles and text | appmeta/app.db resolution, icons. ProsperoEden's text engine is ported, with Japanese, Cyrillic and Arabic titles in host snapshots. |
 | M5 | Cache | Persist and load, "scanned N ago", rescan. |
 | M6 | Console validation and release | Performance targets measured. Icon and art. Update check. GitHub release and catalog PR. |
