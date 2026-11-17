@@ -48,7 +48,7 @@ Settings Shell::load_settings(const std::string &data_root)
 Shell::Shell(const ui::Fonts &fonts, const demo::Catalog &catalog, std::string data_root,
              std::uint32_t glass_texture)
     : fonts_(fonts), data_root_(std::move(data_root)), settings_(load_settings(data_root_)),
-      context_{fonts_, catalog, telemetry_, settings_}, glass_texture_(glass_texture)
+      context_{fonts_, catalog, telemetry_, settings_, false, {}}, glass_texture_(glass_texture)
 {
     for (ConceptFactory factory : concept_registry())
         concepts_.push_back(factory(context_));
@@ -58,7 +58,7 @@ Shell::Shell(const ui::Fonts &fonts, const demo::Catalog &catalog, std::string d
         previous_ = current_;
         concepts_[current_]->enter();
     }
-    banner_ = kBannerSeconds;
+    banner_ = concepts_.size() > 1 ? kBannerSeconds : 0.0f;
 }
 
 audio::SoundSet Shell::sound_set() const
@@ -123,14 +123,16 @@ void Shell::update(const InputFrame &input, float dt)
     }
 
     const int count = static_cast<int>(concepts_.size());
-    if (input.is_pressed(Action::page_next) || input.is_pressed(Action::page_prev))
+    const bool switching = count > 1;
+    const std::uint32_t shell_actions = switching ? kShellActions : 0u;
+    if (switching && (input.is_pressed(Action::page_next) || input.is_pressed(Action::page_prev)))
     {
         direction_ = input.is_pressed(Action::page_next) ? 1 : -1;
         show(static_cast<std::size_t>((static_cast<int>(current_) + direction_ + count) % count),
              true);
         feedback_.play(audio::Cue::tab, 1.0f, direction_ > 0 ? 0.3f : -0.3f);
     }
-    if (input.is_pressed(Action::touch))
+    if (switching && input.is_pressed(Action::touch))
     {
         info_open_ = !info_open_;
         feedback_.play(info_open_ ? audio::Cue::modal_open : audio::Cue::modal_close);
@@ -144,9 +146,9 @@ void Shell::update(const InputFrame &input, float dt)
     // The active design sees everything the shell does not use; nothing at
     // all while the info panel covers it.
     InputFrame forwarded = input;
-    forwarded.pressed &= ~kShellActions;
-    forwarded.released &= ~kShellActions;
-    forwarded.held &= ~kShellActions;
+    forwarded.pressed &= ~shell_actions;
+    forwarded.released &= ~shell_actions;
+    forwarded.held &= ~shell_actions;
     if (info_open_)
     {
         forwarded = InputFrame{};

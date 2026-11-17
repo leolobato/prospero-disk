@@ -255,6 +255,8 @@ int main(int argc, char **argv)
     std::remove((data_root + "/settings.bin").c_str());
     hui::app::Shell shell(fonts, catalog, data_root, renderer.glass_texture());
     shell.set_version("host");
+    shell.set_texture_factory([&renderer](int width, int height, const std::uint8_t *rgba)
+                              { return renderer.batch().create_texture(width, height, rgba); });
 
     constexpr float kDt = 1.0f / 60.0f;
     // HUI_MANIFEST=<file.json>: describe every design and theme (host/manifest.cpp).

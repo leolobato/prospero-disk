@@ -25,6 +25,9 @@ namespace hui::app
 //   L1 / R1    previous / next design (cross-fade and slide)
 //   touchpad   info panel: what the design demonstrates and where its code is
 //
+// With a single design there is nothing to switch: L1, R1 and the touchpad
+// then go to the design like every other button.
+//
 // Everything else goes to the active design. The shell also keeps the
 // settings on disk and feeds the telemetry the designs may display.
 class Shell
@@ -65,6 +68,11 @@ class Shell
     void set_version(std::string version)
     {
         version_ = std::move(version);
+    }
+    void set_texture_factory(
+        std::function<std::uint32_t(int width, int height, const std::uint8_t *rgba)> factory)
+    {
+        context_.create_texture = std::move(factory);
     }
 
     // ---- for the tour and tests ----

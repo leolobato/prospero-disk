@@ -16,6 +16,7 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <span>
 #include <vector>
@@ -63,6 +64,10 @@ struct Context
     // applies the change (volumes, button swap, ...) and saves it.
     Settings &settings;
     bool settings_changed = false;
+    // Uploads RGBA8 pixels as a texture for DrawList::image and returns its
+    // name. Set by the app once a GL context exists; empty in tests, where a
+    // design draws its placeholder instead.
+    std::function<std::uint32_t(int width, int height, const std::uint8_t *rgba)> create_texture;
 };
 
 // One frame of a design, back to front:
