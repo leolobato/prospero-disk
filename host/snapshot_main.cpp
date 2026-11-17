@@ -22,6 +22,7 @@
 #include "demo/catalog.hpp"
 #include "gfx/gl_program.hpp"
 #include "gfx/renderer.hpp"
+#include "gfx/system_fonts.hpp"
 #include "manifest.hpp"
 #include "ui/fonts.hpp"
 
@@ -66,8 +67,15 @@ bool open_context()
            eglMakeCurrent(display, EGL_NO_SURFACE, EGL_NO_SURFACE, context);
 }
 
+// PE_LANGUAGE picks the language the console fonts are chosen for ("ja-JP").
+std::string host_language()
+{
+    const char *language = std::getenv("PE_LANGUAGE");
+    return language != nullptr && language[0] != 0 ? language : "en-US";
+}
+
 bool load_font(hui::gfx::Renderer &renderer, const std::string &path, hui::gfx::Font *font,
-               hui::ui::FontRef *ref)
+               hui::ui::FontRef *ref, bool system_fonts = false)
 {
     std::string data;
     if (!hui::save::read_file(path, &data) || !font->load(data))
@@ -76,7 +84,13 @@ bool load_font(hui::gfx::Renderer &renderer, const std::string &path, hui::gfx::
         return false;
     }
     ref->font = font;
+    // The faces that draw names (files, titles) also take other scripts from
+    // the console's own fonts (docs/PRD.md 7.5), before the texture exists.
+    const std::size_t extra =
+        system_fonts ? hui::gfx::attach_system_fonts(*font, host_language()) : 0;
     ref->texture = renderer.batch().create_font_texture(*font);
+    if (extra != 0)
+        renderer.track_font(ref->texture, font);
     return true;
 }
 
@@ -172,9 +186,10 @@ int main(int argc, char **argv)
     hui::gfx::Font hand;
     hui::ui::Fonts fonts;
     if (!renderer.init() ||
-        !load_font(renderer, assets + "/fonts/inter-regular.huifont", &regular, &fonts.regular) ||
-        !load_font(renderer, assets + "/fonts/inter-semibold.huifont", &semibold,
-                   &fonts.semibold) ||
+        !load_font(renderer, assets + "/fonts/inter-regular.huifont", &regular, &fonts.regular,
+                   true) ||
+        !load_font(renderer, assets + "/fonts/inter-semibold.huifont", &semibold, &fonts.semibold,
+                   true) ||
         !load_font(renderer, assets + "/fonts/montserrat-medium.huifont", &display,
                    &fonts.display) ||
         !load_font(renderer, assets + "/fonts/dejavu-sans-mono.huifont", &mono, &fonts.mono) ||

@@ -36,6 +36,8 @@ while IFS= read -r line; do
     sources+=("$root/$line")
 done < "$root/tests/unit/sources.txt"
 
+harfbuzz_include=$(bash "$root/tools/fetch-harfbuzz.sh")
+
 objects=()
 for source in "${sources[@]}"; do
     relative=${source#"$root/"}
@@ -54,6 +56,7 @@ for source in "${sources[@]}"; do
     else
         ninja_edge CXX "$object" "${compiler_cache[@]}" "$cxx" "${flags[@]}" -pthread \
             "${sanitizers[@]}" "-DHUI_SOURCE_DIR=\"$root\"" -I"$root/src" -I"$root/tests" \
+            -isystem "$harfbuzz_include" \
             -isystem "$gtest/googletest/include" -MD -MF "$object.d" -c "$source" -o "$object"
     fi
     objects+=("$object")

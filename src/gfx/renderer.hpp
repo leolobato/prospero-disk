@@ -53,6 +53,13 @@ class Renderer
         return glass_a_.texture();
     }
 
+    // A font whose atlas grows while the app runs (Font::use_system_fonts):
+    // present() uploads the rows it drew new glyphs into, before drawing.
+    void track_font(std::uint32_t handle, const Font *font)
+    {
+        tracked_fonts_.push_back({handle, font});
+    }
+
     // ---- queue a frame ----
     void begin();
     void backdrop(const BackdropSpec &spec, float opacity = 1.0f);
@@ -74,6 +81,13 @@ class Renderer
     }
 
   private:
+    struct TrackedFont
+    {
+        std::uint32_t handle;
+        const Font *font;
+    };
+    std::vector<TrackedFont> tracked_fonts_;
+
     enum class Kind : std::uint8_t
     {
         backdrop,

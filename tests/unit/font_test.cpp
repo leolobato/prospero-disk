@@ -7,7 +7,6 @@
 
 #include <gtest/gtest.h>
 
-#include <initializer_list>
 #include <string>
 #include <vector>
 
@@ -22,43 +21,19 @@ using hui::gfx::Align;
 using hui::gfx::Font;
 using hui::gfx::GlyphQuad;
 
-// A face of its own for what the baked ones cannot show: one square glyph per
-// code point (given in rising order), each `advance` wide at `pixel_size`.
-std::string small_face(std::initializer_list<std::uint32_t> codepoints, float pixel_size,
-                       float advance)
-{
-    namespace ff = hui::gfx::font_format;
-    ff::Header header{};
-    header.magic = ff::kMagic;
-    header.version = ff::kVersion;
-    header.atlas_width = 8;
-    header.atlas_height = 8;
-    header.pixel_size = pixel_size;
-    header.sdf_range = 2.0f;
-    header.ascent = pixel_size * 0.8f;
-    header.descent = -pixel_size * 0.2f;
-    header.glyph_count = static_cast<std::uint32_t>(codepoints.size());
-    std::string data(reinterpret_cast<const char *>(&header), sizeof(header));
-    for (const std::uint32_t codepoint : codepoints)
-    {
-        const ff::Glyph glyph{codepoint, 0, 0, 4, 4, 0.0f, -4.0f, advance};
-        data.append(reinterpret_cast<const char *>(&glyph), sizeof(glyph));
-    }
-    data.append(64, '\x80');
-    return data;
-}
-
 const Font &inter()
 {
-    static Font font = []
+    // Built in place: a Font owns its glyph caches and cannot be copied.
+    static Font font;
+    static const bool loaded = []
     {
-        Font loaded;
         std::string data;
         EXPECT_TRUE(
             hui::save::read_file(HUI_SOURCE_DIR "/assets/fonts/inter-semibold.huifont", &data));
-        EXPECT_TRUE(loaded.load(data)) << loaded.error();
-        return loaded;
+        EXPECT_TRUE(font.load(data)) << font.error();
+        return true;
     }();
+    (void)loaded;
     return font;
 }
 
@@ -129,36 +104,43 @@ TEST(Font, UnknownCharactersFallBackToQuestionMark)
     EXPECT_FLOAT_EQ(font.measure("\xFF", 30), font.measure("?", 30));         // invalid byte
 }
 
-TEST(Font, AsksItsFallbacksForWhatItLacks)
+// What the baked face lacks comes from the console's fonts; on a PC, Noto CJK
+// stands in for them (docs/PRD.md 7.5).
+TEST(Font, DrawsOtherScriptsFromSystemFonts)
 {
-    Font font = inter(); // a copy: fallbacks belong to one font
-    Font other;
-    ASSERT_TRUE(other.load(small_face({0x4e16, 0x754c}, 16.0f, 16.0f))) << other.error();
-    const std::string mixed = "A\xE4\xB8\x96"; // "A" and U+4E16
-    EXPECT_FALSE(font.has_glyph(0x4e16));
-    const float before = font.measure(mixed, 32);
-    EXPECT_FLOAT_EQ(before, font.measure("A?", 32));
+    const std::string cjk = "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc";
+    std::string probe;
+    if (!hui::save::read_file(cjk, &probe, 64u << 20))
+        GTEST_SKIP() << "no Noto CJK on this machine";
+    Font font;
+    std::string data;
+    ASSERT_TRUE(hui::save::read_file(HUI_SOURCE_DIR "/assets/fonts/inter-semibold.huifont", &data));
+    ASSERT_TRUE(font.load(data)) << font.error();
+    const int baked_rows = font.atlas_height();
 
-    font.add_fallback(&other, 7);
-    EXPECT_TRUE(font.has_glyph(0x4e16));
-    // The glyph keeps its own face's metrics: 16 wide at 16, so 32 at 32.
-    EXPECT_NEAR(font.measure(mixed, 32), font.measure("A", 32) + 32.0f, 0.01f);
+    const std::string kanji = "\xE6\x97\xA5\xE6\x9C\xAC"; // two CJK ideographs
+    EXPECT_FALSE(font.can_draw(kanji));
+    EXPECT_FLOAT_EQ(font.measure(kanji, 30), font.measure("??", 30));
+
+    font.use_system_fonts({cjk}, "ja-JP");
+    EXPECT_TRUE(font.can_draw(kanji));
+    EXPECT_GT(font.atlas_height(), baked_rows); // room for the new glyphs
     std::vector<GlyphQuad> quads;
-    font.layout(mixed, 0.0f, 0.0f, 32.0f, Align::left, quads);
+    font.layout(kanji, 0.0f, 0.0f, 32.0f, Align::left, quads);
     ASSERT_EQ(quads.size(), 2u);
-    EXPECT_EQ(quads[0].texture, 0u);
     EXPECT_FLOAT_EQ(quads[0].range, font.sdf_range(32.0f));
-    EXPECT_EQ(quads[1].texture, 7u);
-    EXPECT_FLOAT_EQ(quads[1].range, other.sdf_range(32.0f));
-    EXPECT_NEAR(quads[1].x1 - quads[1].x0, 8.0f, 0.01f); // 4 atlas pixels at twice the size
-    // What no face has is still the font's own question mark.
-    EXPECT_FLOAT_EQ(font.measure("\xE2\x98\x83", 30), inter().measure("?", 30));
-    // A fallback is never asked for what the font has itself.
-    EXPECT_FLOAT_EQ(font.measure("Light Up", 40), inter().measure("Light Up", 40));
+    EXPECT_GT(quads[0].x1 - quads[0].x0, 10.0f);
 
-    font.clear_fallbacks();
-    EXPECT_FALSE(font.has_glyph(0x4e16));
-    EXPECT_FLOAT_EQ(font.measure(mixed, 32), before);
+    // The glyphs were drawn below the baked ones, once.
+    int first = 0;
+    int last = 0;
+    ASSERT_TRUE(font.take_changed_rows(&first, &last));
+    EXPECT_GE(first, baked_rows);
+    EXPECT_GT(last, first);
+    EXPECT_FALSE(font.take_changed_rows(&first, &last));
+
+    // Latin text measures as it did; what no font has still shows as '?'.
+    EXPECT_FLOAT_EQ(font.measure("Light Up", 40), inter().measure("Light Up", 40));
 }
 
 TEST(Font, DecodesUtf8)

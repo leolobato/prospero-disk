@@ -34,6 +34,9 @@ class GlBatch
     // slot taken it returns a plain texture name, which also works but starts
     // a new draw call wherever that font is used.
     std::uint32_t create_font_texture(const Font &font);
+    // Uploads the atlas rows a font drew new glyphs into since the last call
+    // (Font::take_changed_rows); handle is what create_font_texture returned.
+    void sync_font_texture(std::uint32_t handle, const Font &font);
     // Uploads RGBA8 pixels as a single-level texture; returns its name.
     std::uint32_t create_texture(int width, int height, const std::uint8_t *rgba);
 

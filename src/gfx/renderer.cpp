@@ -162,6 +162,9 @@ void Renderer::present(GLuint framebuffer, int width, int height, float virtual_
 {
     draw_calls_ = 0;
     instances_ = 0;
+    // The frame's text is laid out by now: upload the glyphs it added.
+    for (const TrackedFont &tracked : tracked_fonts_)
+        batch_.sync_font_texture(tracked.handle, *tracked.font);
     glBindFramebuffer(GL_FRAMEBUFFER, framebuffer);
     glViewport(0, 0, width, height);
     for (std::size_t i = 0; i < layers_.size(); ++i)

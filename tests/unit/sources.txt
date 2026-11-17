@@ -18,7 +18,10 @@ src/core/settings.cpp
 src/core/version.cpp
 src/demo/catalog.cpp
 src/gfx/draw_list.cpp
+src/gfx/bidi.cpp
 src/gfx/font.cpp
+src/gfx/system_fonts.cpp
+src/third_party/harfbuzz/harfbuzz.cpp
 src/gfx/triangulate.cpp
 src/third_party/stb/vorbis.c
 src/ui/components/*.cpp
