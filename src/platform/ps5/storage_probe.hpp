@@ -16,6 +16,8 @@ namespace hui::ps5
 // Each line goes to emit as soon as it is known, so that a call the sandbox
 // refuses by killing the process still leaves the lines before it in the log.
 // getfsstat runs last for that reason.
-std::string probe_storage(const std::function<void(const std::string &)> &emit);
+// statfs and getfsstat run only when elevated: the sandbox ends the process
+// on them.
+std::string probe_storage(bool elevated, const std::function<void(const std::string &)> &emit);
 
 } // namespace hui::ps5

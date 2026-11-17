@@ -15,7 +15,6 @@
 #include <sys/mount.h>
 #include <sys/param.h>
 #include <sys/stat.h>
-#include <sys/statvfs.h>
 #include <vector>
 
 namespace hui::ps5
@@ -46,7 +45,7 @@ unsigned long long gib(unsigned long long bytes)
     return bytes >> 30;
 }
 
-void probe_path(std::string &out, const std::string &path)
+void probe_path(std::string &out, const std::string &path, bool elevated)
 {
     struct stat st
     {
@@ -68,19 +67,24 @@ void probe_path(std::string &out, const std::string &path)
     }
     else
         list_error = errno;
-    struct statvfs vfs
+    struct statfs fs
     {
     };
-    line(out, "  statvfs %s", path.c_str());
-    const bool vfs_ok = statvfs(path.c_str(), &vfs) == 0;
-    const unsigned long long unit = vfs.f_frsize != 0 ? vfs.f_frsize : vfs.f_bsize;
+    bool fs_ok = false;
+    if (elevated)
+    {
+        line(out, "  statfs %s", path.c_str());
+        fs_ok = statfs(path.c_str(), &fs) == 0;
+    }
+    const auto unit = static_cast<unsigned long long>(fs.f_bsize);
     line(out,
-         "path %s stat=%s(errno %d) dev=%llu list=%d(errno %d) statvfs=%s total=%lluGiB "
-         "used=%lluGiB",
+         "path %s stat=%s(errno %d) dev=%llu list=%d(errno %d) statfs=%s type=%s from=%s "
+         "total=%lluGiB used=%lluGiB",
          path.c_str(), stat_ok ? "ok" : "fail", stat_error,
-         static_cast<unsigned long long>(st.st_dev), entries, list_error, vfs_ok ? "ok" : "fail",
-         gib(static_cast<unsigned long long>(vfs.f_blocks) * unit),
-         gib(static_cast<unsigned long long>(vfs.f_blocks - vfs.f_bfree) * unit));
+         static_cast<unsigned long long>(st.st_dev), entries, list_error, fs_ok ? "ok" : "fail",
+         fs_ok ? fs.f_fstypename : "-", fs_ok ? fs.f_mntfromname : "-",
+         gib(static_cast<unsigned long long>(fs.f_blocks) * unit),
+         gib(static_cast<unsigned long long>(fs.f_blocks - fs.f_bfree) * unit));
 }
 
 // st_blocks x 512 against st_size for the first regular files under a folder:
@@ -115,7 +119,7 @@ void probe_blocks(std::string &out, const std::string &root, int depth, int *bud
 
 } // namespace
 
-std::string probe_storage(const std::function<void(const std::string &)> &emit)
+std::string probe_storage(bool elevated, const std::function<void(const std::string &)> &emit)
 {
     g_emit = &emit;
     std::string out;
@@ -130,14 +134,20 @@ std::string probe_storage(const std::function<void(const std::string &)> &emit)
     for (const disk::VolumeSpec &spec : disk::console_volume_specs())
         paths.push_back(spec.path);
     for (const std::string &path : paths)
-        probe_path(out, path);
-    probe_path(out, "/system_data/priv/mms/app.db");
+        probe_path(out, path, elevated);
+    probe_path(out, "/system_data/priv/mms/app.db", elevated);
 
     int budget = 6;
     probe_blocks(out, "/user/app", 2, &budget);
     budget = 3;
     probe_blocks(out, "/mnt/usb0", 2, &budget);
 
+    if (!elevated)
+    {
+        line(out, "not elevated: statfs and getfsstat skipped");
+        g_emit = nullptr;
+        return out;
+    }
     line(out, "getfsstat next");
     const int count = getfsstat(nullptr, 0, MNT_NOWAIT);
     line(out, "mounts %d (errno %d)", count, count < 0 ? errno : 0);

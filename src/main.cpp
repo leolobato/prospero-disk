@@ -199,18 +199,26 @@ int main()
 
     // Sandbox elevation (docs/PRD.md 7.2): once, before EGL or any other
     // thread exists. A failure leaves the app in its degraded mode.
+    const std::int64_t started_us = sys::monotonic_us();
     disk::Elevation elevation;
     elevation.attempted = true;
     const elevation::Status grant = elevation::request(elevation::Capability::filesystem);
     elevation.granted = grant == elevation::Status::ok;
     elevation.diagnostic = std::string(elevation_status_name(grant)) + " via " + elevation::path();
     disk::set_elevation(elevation);
-    sys::log("[HUI] elevation %s", elevation.diagnostic.c_str());
+    sys::log("[HUI] elevation %s after %lld ms", elevation.diagnostic.c_str(),
+             static_cast<long long>((sys::monotonic_us() - started_us) / 1000));
     // What the elevation made readable (docs/PRD.md 10.1-3): to the log, and
     // beside the cache for FTP. The cache folder is the app's own (F11).
     {
-        const std::string report =
-            ps5::probe_storage([](const std::string &text) { sys::log("[PD] %s", text.c_str()); });
+        const std::string report = ps5::probe_storage(
+            elevation.granted,
+            [started_us](const std::string &text)
+            {
+                sys::log("[PD] %lld %s",
+                         static_cast<long long>((sys::monotonic_us() - started_us) / 1000),
+                         text.c_str());
+            });
         const std::string dir =
             elevation.granted ? "/data/prospero-disk" : "/download0/prospero-disk";
         if (save::ensure_directory(dir))
