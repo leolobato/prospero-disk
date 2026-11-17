@@ -37,7 +37,7 @@ gtest=$(bash "$root/tools/setup-test-dependencies.sh")
 mapfile -d '' test_sources < <(find "$root/tests" -type f -name '*.cpp' -print0)
 if (( ${#test_sources[@]} )); then
     run_tidy test_sources -std=c++20 "-DHUI_SOURCE_DIR=\"$root\"" -I"$root/src" -I"$root/tests" \
-        -isystem "$gtest/googletest/include"
+        -isystem "$gtest/googletest/include" -isystem "$(bash "$root/tools/fetch-harfbuzz.sh")"
 fi
 
 # The application headers include the ps5-opengl SDK's EGL/GL headers.
@@ -57,6 +57,6 @@ app_cpp_sources+=("$root/tooling/native/app_crt.cpp" "$root/tooling/native/app_c
 if (( ${#app_cpp_sources[@]} )); then
     run_tidy app_cpp_sources -std=c++20 -fno-exceptions -fno-rtti --target=x86_64-sie-ps5 \
         -DGL_GLEXT_PROTOTYPES=1 -I"$root/src" \
-        -isystem "$opengl" \
+        -isystem "$opengl" -isystem "$(bash "$root/tools/fetch-harfbuzz.sh")" \
         -isystem "$sdk/target/include/c++/v1" -isystem "$sdk/target/include"
 fi
