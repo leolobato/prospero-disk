@@ -164,10 +164,12 @@ Two sources, both on hand in `~/playden-ps5`:
   item. The client first gives a resident Lapy service a bounded chance, then
   sends the packaged helper to the ELF loader on `127.0.0.1:9021`. It returns
   success only after a real `/data` write and read-back.
-- **Helper: the boilerplate's pin, as built.** `tools/build-lapy-helper.py`
-  (from the boilerplate) fetches `mpereiraesaa/PS5-Lapy-JB-Daemon` at
-  `54a095c` and builds the exact-title helper for `PPSA93475` with Payload
-  SDK **v0.40**; the app itself builds with the kit's SDK. `make` packages it
+- **Helper: Playden's pin, as built.** `tools/build-lapy-helper.py` fetches
+  `leolobato/PS5-Lapy-JB-Daemon` at `66ab4f1` and builds the exact-title
+  helper for `PPSA93475` with Payload SDK **v0.42** and Playden's ps5log
+  client; the app itself builds with the kit's SDK. (The boilerplate's pin,
+  `54a095c` with SDK v0.40, failed its exchange on 13.60: "transport error".
+  This one returned "elevation ok" on 13.60 on 2026-11-17.) `make` packages it
   (`APP_LAPY_HELPER=1` by default) as `lapy.elf`, `lapy-manifest.json` and
   `licenses/Lapy-MIT.txt`, and checks the manifest's hash and title. This is
   the pin the boilerplate qualified with this exact client on 6.02 and 12.70.
@@ -327,6 +329,16 @@ ELF loader was not listening on 9021, so the Lapy client returned
 ENOENT, and `statfs`/`statvfs` end the process (CE-108255-1). The app
 therefore calls them only once elevated. Still open: the same probe with a
 working grant.
+
+**Later runs the same day, elevated (Playden's helper pin, elfldr v0.27
+reloaded on 9021):** the grant succeeds ("elevation ok via helper after
+4.7 s", effective uid restored to 1), and `/` and `/user` can be listed. But
+`statfs` still ends the process on `/` and on `/user`, even into an 8 KiB
+buffer, so it is not a struct-size overrun: the app no longer calls `statfs`,
+`statvfs` or `getfsstat` on the console, and volume sizes (and with them the
+"System & hidden" reconciliation) need another source. The last run, with no
+`statfs` at all, stayed on the launch background and wrote no log; the kernel
+log (port 3232) is needed to see why.
 
 ## 11. MVP delimitation
 
