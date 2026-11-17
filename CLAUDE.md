@@ -2,7 +2,7 @@
 
 A disk-usage explorer for jailbroken PS5s (title `PPSA93475`), forked from
 ps5-homebrew-ui (remote `kit`). What to build is in
-[docs/PRD.md](docs/PRD.md); milestones are in its section 11.
+[docs/PRD.md](docs/PRD.md); the MVP scope is its section 11 and the milestones section 12.
 
 The kit's instructions for coding agents are in [AGENTS.md](AGENTS.md); they
 apply here and are imported below. Its gallery designs were removed: the app's
