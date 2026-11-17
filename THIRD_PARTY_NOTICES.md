@@ -8,7 +8,8 @@ kit's, followed by what Prospero Disk adds.
 
 | Component | Where | Licence |
 | --- | --- | --- |
-| [PS5-Lapy-JB-Daemon](https://github.com/mpereiraesaa/PS5-Lapy-JB-Daemon) (exact-title one-shot helper, commit `54a095c`, built by `tools/build-lapy-helper.py`; original by [ArkSama / Team PHU](https://github.com/ArkSama/PS5-Lapy-JB-Daemon)) | `lapy.elf` in the app folder, with `licenses/Lapy-MIT.txt` | MIT |
+| [PS5-Lapy-JB-Daemon](https://github.com/leolobato/PS5-Lapy-JB-Daemon) (exact-title one-shot helper, the fork Playden ships, commit `66ab4f1`, built by `tools/build-lapy-helper.py`; from [mpereiraesaa's fork](https://github.com/mpereiraesaa/PS5-Lapy-JB-Daemon) of the original by [ArkSama / Team PHU](https://github.com/ArkSama/PS5-Lapy-JB-Daemon)) | `lapy.elf` in the app folder, with `licenses/Lapy-MIT.txt` | MIT |
+| ps5log logging client from [prospero-win](https://github.com/leolobato/prospero-win) `d9c00be`, built into the helper | `lapy.elf` | LGPL-2.1-or-later |
 | Lapy cooperative elevation client, from [ps5-native-app-boilerplate](https://github.com/blackbearreloaded/ps5-native-app-boilerplate) `f98de73` | `src/platform/ps5/elevation/` | GPL-3.0-or-later, Copyright (C) 2026 BlackBearReloaded |
 | ProsperoEden's text engine (baked font, console fonts, bidi) and system-language helper | `src/gfx/font.*`, `src/gfx/system_fonts.*`, `src/gfx/bidi.*`, `src/platform/ps5/system_language.hpp` | GPL-3.0-or-later, Copyright (C) 2026 BlackBearReloaded |
 | [HarfBuzz](https://github.com/harfbuzz/harfbuzz) 12.3.2, fetched by `tools/fetch-harfbuzz.sh` (hash pinned) and compiled through `src/third_party/harfbuzz/harfbuzz.cpp` | built into the app | "Old MIT" (its `COPYING`) |

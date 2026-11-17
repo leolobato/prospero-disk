@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# ps5-native-app-boilerplate - Build the pinned upstream Lapy one-shot helper.
+# ps5-native-app-boilerplate - Build the pinned Lapy one-shot helper (Playden's 13.60 pin).
 # Copyright (C) 2026 BlackBearReloaded
 # SPDX-License-Identifier: GPL-3.0-or-later
 """Fetch, build, and verify upstream Lapy's exact-title elfldr helper."""
@@ -12,6 +12,7 @@ from pathlib import Path
 import re
 import shutil
 import subprocess
+import sys
 import tempfile
 import urllib.request
 import zipfile
@@ -19,17 +20,26 @@ import zipfile
 
 ROOT = Path(__file__).resolve().parents[1]
 CACHE = ROOT / ".deps/lapy"
-LAPY_COMMIT = "54a095c0f19161825e845daa760a03b446e654fa"
+# The helper Playden ships on firmware 13.60 (docs/PRD.md 7.2): the
+# leolobato/PS5-Lapy-JB-Daemon fork at its owned_title_revision, built with the
+# Payload SDK and ps5log client Playden pins. The earlier boilerplate pin
+# (mpereiraesaa 54a095c, SDK v0.40) failed its exchange on 13.60.
+LAPY_REPOSITORY = "https://github.com/leolobato/PS5-Lapy-JB-Daemon.git"
+LAPY_COMMIT = "66ab4f10f9a6c6a5a42d05f1d165230c13ae2ab7"
 LAPY = CACHE / f"PS5-Lapy-JB-Daemon-{LAPY_COMMIT[:7]}"
-SDK = CACHE / "ps5-payload-sdk-v0.40"
-SDK_URL = "https://github.com/ps5-payload-dev/sdk/releases/download/v0.40/ps5-payload-sdk.zip"
-SDK_SHA256 = "617fb702df3551f709b2db0a014e618cf39334c9348395a9b005e6504d076a42"
-PS5LOG = CACHE / "ps5log-1ae1f918"
-PS5LOG_URL = (
-    "https://raw.githubusercontent.com/mpereiraesaa/ps5-agc-gears/"
-    "1ae1f9182abd2770c131b97419034fb85173c2dc/native/ps5log/ps5log.h"
-)
-PS5LOG_SHA256 = "394af67d0f8b60b3335deb53396e52855ea2daa50ca914a456ea7663f48900c6"
+SDK_VERSION = "v0.42"
+SDK = CACHE / f"ps5-payload-sdk-{SDK_VERSION}"
+SDK_URL = f"https://github.com/ps5-payload-dev/sdk/releases/download/{SDK_VERSION}/ps5-payload-sdk.zip"
+SDK_SHA256 = "8cfbc7cd5811e719eb4f0c47eea668d3dc7b40bc8ab11c4a5031d40c23ec02da"
+PS5LOG_COMMIT = "d9c00befa0056e7231db29ecc1bd5651303ac4b6"
+PS5LOG = CACHE / f"ps5log-{PS5LOG_COMMIT[:8]}"
+PS5LOG_URL = f"https://raw.githubusercontent.com/leolobato/prospero-win/{PS5LOG_COMMIT}/native/ps5log/"
+PS5LOG_FILES = {
+    "ps5log.c": "4ac6dc819ce48bcc4a613f119a53d7cbb5fa7974a77436ccb19b18b4fcf800d2",
+    "ps5log.h": "05373177e2c1cd348848014139646e8b35306da673ff5c0a9089c1247eda394f",
+    "ps5log_ps5_net.c": "d6ea249349bf2a085efa90adfd55f23f2ec9c10cb3df49bbdb8f26bf62fa37d6",
+    "ps5log_ps5_net.h": "90693d535a033991dd201e81ef576eafb0edac55ca7c8e2b329e643b50458637",
+}
 PROTOCOL_SHA256 = "bb02c4aa814eaba7a7a423a31b29ff41f786212c2953678cf29434e85fa0f869"
 
 
@@ -69,7 +79,7 @@ def fetch_lapy():
     try:
         subprocess.run(["git", "init", "-q"], cwd=staging, check=True)
         subprocess.run(["git", "remote", "add", "origin",
-                        "https://github.com/mpereiraesaa/PS5-Lapy-JB-Daemon.git"],
+                        LAPY_REPOSITORY],
                        cwd=staging, check=True)
         subprocess.run(["git", "fetch", "-q", "--depth", "1", "origin", LAPY_COMMIT],
                        cwd=staging, check=True)
@@ -88,7 +98,7 @@ def fetch_sdk():
         return
     if SDK.exists():
         raise RuntimeError(f"{SDK} is incomplete or does not match the pinned archive")
-    archive = CACHE / "ps5-payload-sdk-v0.40.zip"
+    archive = CACHE / f"ps5-payload-sdk-{SDK_VERSION}.zip"
     download(SDK_URL, archive, SDK_SHA256)
     staging = Path(tempfile.mkdtemp(prefix="lapy-sdk-", dir=CACHE))
     try:
@@ -118,8 +128,8 @@ def fetch_sdk():
 
 
 def fetch_ps5log():
-    header = PS5LOG / "ps5log.h"
-    download(PS5LOG_URL, header, PS5LOG_SHA256)
+    for name, expected in PS5LOG_FILES.items():
+        download(PS5LOG_URL + name, PS5LOG / name, expected)
 
 
 def main():
@@ -134,9 +144,10 @@ def main():
     fetch_sdk()
     fetch_ps5log()
     environment = os.environ.copy()
-    environment.update(PS5_PAYLOAD_SDK=str(SDK), LOGGING_CLIENT=str(PS5LOG))
-    subprocess.run(["make", "owned-helper", f"TARGET_TITLE={args.title}"], cwd=LAPY,
-                   env=environment, check=True)
+    environment.update(PS5_PAYLOAD_SDK=str(SDK))
+    subprocess.run([sys.executable, "tools/build_owned_daemon.py", "--sdk", str(SDK),
+                    "--logging-client", str(PS5LOG), "--elf-helper", "--title", args.title],
+                   cwd=LAPY, env=environment, check=True)
 
     source = LAPY / f"build/owned_root_helper-{args.title}"
     elf = source / "lapy.elf"
