@@ -319,6 +319,15 @@ blank.
 6. **System fonts while sandboxed.** Is `/preinst/common/font` readable
    without the grant (§7.5)? This decides what the degraded mode can show.
 
+**First console run (2026-11-17, firmware 13.60, without elevation):** the
+ELF loader was not listening on 9021, so the Lapy client returned
+"unavailable" after 2.5 s. In the title's sandbox every candidate path
+(`/`, `/user`, `/data`, `/system_data`, `/mnt/ext*`, `/mnt/usb*`,
+`/preinst/common/font`, `/user/appmeta`, `app.db`) fails with EPERM or
+ENOENT, and `statfs`/`statvfs` end the process (CE-108255-1). The app
+therefore calls them only once elevated. Still open: the same probe with a
+working grant.
+
 ## 11. MVP delimitation
 
 The MVP is the smallest build that answers "what is using my space?" on a real
