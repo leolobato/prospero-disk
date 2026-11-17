@@ -8,7 +8,12 @@
 #include <cstdio>
 #include <dirent.h>
 #include <sys/stat.h>
+#if defined(__PROSPERO__)
+#include <sys/mount.h>
+#include <sys/param.h>
+#else
 #include <sys/statvfs.h>
+#endif
 #include <unistd.h>
 
 namespace hui::disk
@@ -42,6 +47,10 @@ void fill(const struct stat &st, Entry *out)
 class PosixFileSystem final : public FileSystem
 {
   public:
+    explicit PosixFileSystem(bool allow_space) : allow_space_(allow_space)
+    {
+    }
+
     bool list(const std::string &path, std::vector<Entry> *out, int *error) const override
     {
         out->clear();
@@ -92,6 +101,21 @@ class PosixFileSystem final : public FileSystem
 
     bool space(const std::string &path, SpaceInfo *out) const override
     {
+        if (!allow_space_)
+            return false;
+#if defined(__PROSPERO__)
+        // statvfs from the console's libc ends the process in a title's
+        // sandbox (seen on 13.60); the kernel's statfs answers the same.
+        struct statfs fs
+        {
+        };
+        if (statfs(path.c_str(), &fs) != 0)
+            return false;
+        const auto unit = static_cast<std::uint64_t>(fs.f_bsize);
+        out->total = static_cast<std::uint64_t>(fs.f_blocks) * unit;
+        out->free = fs.f_bavail > 0 ? static_cast<std::uint64_t>(fs.f_bavail) * unit : 0u;
+        const auto unused = static_cast<std::uint64_t>(fs.f_bfree) * unit;
+#else
         struct statvfs vfs
         {
         };
@@ -101,6 +125,7 @@ class PosixFileSystem final : public FileSystem
         out->total = static_cast<std::uint64_t>(vfs.f_blocks) * unit;
         out->free = static_cast<std::uint64_t>(vfs.f_bavail) * unit;
         const std::uint64_t unused = static_cast<std::uint64_t>(vfs.f_bfree) * unit;
+#endif
         out->used = out->total > unused ? out->total - unused : 0u;
         return true;
     }
@@ -131,13 +156,16 @@ class PosixFileSystem final : public FileSystem
         std::fclose(file);
         return ok;
     }
+
+  private:
+    bool allow_space_;
 };
 
 } // namespace
 
-std::unique_ptr<FileSystem> make_posix_filesystem()
+std::unique_ptr<FileSystem> make_posix_filesystem(bool allow_space)
 {
-    return std::make_unique<PosixFileSystem>();
+    return std::make_unique<PosixFileSystem>(allow_space);
 }
 
 } // namespace hui::disk

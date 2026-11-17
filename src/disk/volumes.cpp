@@ -93,7 +93,7 @@ Environment make_environment()
     Environment env;
     env.elevation = elevation_state();
 #if defined(__PROSPERO__)
-    env.fs = make_posix_filesystem();
+    env.fs = make_posix_filesystem(env.elevation.granted);
     env.specs = console_volume_specs();
     env.appmeta_roots = {"/user/appmeta", "/user/appmeta/external"};
     env.app_db = "/system_data/priv/mms/app.db";
