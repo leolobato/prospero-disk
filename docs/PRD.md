@@ -282,7 +282,8 @@ blank.
   license for the helper ELF, the font engine).
 - Release: a tagged GitHub release with a `.zip` of the app folder. Raise
   `contentVersion` in `sce_sys/param.json` in every release.
-- `sce_sys/icon0.png` at 512×512, `pic0`/`pic1` backgrounds, `snd0.at9`.
+- `sce_sys/icon0.png` at 512×512, `pic0`/`pic1` backgrounds. No `snd0.at9`
+  and no in-app music: the owner removed both on 2026-11-18.
 - An in-app update check: the boilerplate's `update-check` example against the
   catalog API.
 - Catalog entry `apps/PPSA93475.json`, category `utilities`. Decide on
@@ -334,11 +335,26 @@ working grant.
 reloaded on 9021):** the grant succeeds ("elevation ok via helper after
 4.7 s", effective uid restored to 1), and `/` and `/user` can be listed. But
 `statfs` still ends the process on `/` and on `/user`, even into an 8 KiB
-buffer, so it is not a struct-size overrun: the app no longer calls `statfs`,
-`statvfs` or `getfsstat` on the console, and volume sizes (and with them the
-"System & hidden" reconciliation) need another source. The last run, with no
-`statfs` at all, stayed on the launch background and wrote no log; the kernel
-log (port 3232) is needed to see why.
+buffer, so it is not a struct-size overrun.
+
+**Resolved later that day (docs/platform/CONSOLE_NOTES.md):**
+
+- `statfs`, `statvfs` and `getfsstat` are `libkernel_sys` exports: they link,
+  but resolve to a null import in an app. Volume sizes now come from
+  `_fstatfs`, resolved with `sceKernelDlsym(0x2001, ...)` after the grant, and
+  they are correct (Internal 674 GB, M.2 1.00 TB).
+- The run that "stayed on the launch background" did write its log, in
+  `/download0/hui/dev/app.log`. It showed that the grant removes `/app0` and
+  `/download0`: the fonts failed to load and `main` parked. The app now reads
+  its install folder from `/data/homebrew/PPSA93475` after the grant, and
+  keeps settings, the probe and the cache in `/data/prospero-disk`.
+- Answers to the spikes above: after the grant, `/`, `/user`, `/data`,
+  `/system_data`, `/system`, `/preinst/common/font`, `/user/appmeta` and every
+  `/mnt/ext*` and `/mnt/usb*` folder can be listed (1, 6). Folders under `/mnt`
+  exist without a drive, so a volume must also be on another device than
+  `/mnt` (2). `st_blocks` is filled in on the internal disk and on exFAT USB
+  (3). Scans take about 3 s for 140,000 files on M.2 and about 7 s for 540,000
+  files on Internal, with the default thread counts (5).
 
 ## 11. MVP delimitation
 
@@ -354,7 +370,7 @@ console. Everything else in this PRD is v1, delivered after the MVP.
 | Titles | Title **names** from `/user/appmeta/<ID>/param.json`. | Icons. The `app.db` fallback. |
 | Text | The kit's `european` glyph set. Characters it can't draw show as a placeholder. | The ProsperoEden font engine for full CJK/Cyrillic coverage. |
 | Cache | — (every launch rescans). | The per-volume cache (§7.4), "scanned N ago", opening instantly. |
-| Polish | Kit sounds and motion, splash. | Final icon and art, `snd0`, About screen. |
+| Polish | Kit sounds and motion, splash. | Final icon and art, About screen. |
 | Distribution | Sideloaded dev build. | Update check, GitHub release, ProsperoStore catalog PR. |
 | Verification | Unit tests for the walker and layout, host snapshots, one console run with timings and a `statfs` reconciliation. | Performance targets in §7.6 met and recorded. |
 

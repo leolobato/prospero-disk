@@ -17,7 +17,9 @@ Read-only: it shows sizes and never changes your data.
 
 At the root of a volume, "System & hidden" is the used space the scan cannot
 see (statfs used minus everything counted), so the numbers add up. Folders
-named after a title ID show the title's name and icon. Text in other scripts
+named after a title ID (also `PPSA01467-app0` and the like) show the title's
+name and icon, and so do Playden's game folders (`playden/games/2610`), through
+the PS5 title Playden registered for each game. Text in other scripts
 (Japanese, Korean, Chinese, Thai, Arabic) is drawn with the console's own
 fonts.
 
@@ -57,7 +59,8 @@ paced by the tour's clock, so a scan in progress is the same picture on every
 run. Two environment variables change that:
 
 - `PD_VOLUMES="Home=/home/me;Usr=/usr"` scans real folders instead
-  (`PD_CACHE=<dir>` also caches them, `PD_APP_DB=<file>` names an app.db
+  (`PD_CACHE=<dir>` also caches them, `PD_HOMEBREW=<dir>` names a folder of
+  Playden title folders for game names, `PD_APP_DB=<file>` names an app.db
   for title names);
 - `PE_SYSTEM_FONTS=<dir>` names a folder with fonts under the console's file
   names (`SSTJpPro-Regular.otf`, `SSTArabic-Medium.otf`, `SSTThai-Medium.otf`,
@@ -71,10 +74,12 @@ prints its time and totals; compare with `du -s --block-size=1 -x <path>`.
 ## Status
 
 Built and tested on a PC: the scanner, cache, layout, title lookup (param.json
-and app.db), text engine and every screen (pictures and tests). Not yet run on
-a console: the elevation and its probe (milestone M1 in the PRD), real volumes
-and mounts, the console's fonts, scan speed and frame rate. Console runs need
-the owner's go-ahead.
+and app.db), text engine and every screen (pictures and tests). On a console
+(13.60): the elevation, the probe, volume sizes, scans of the internal disk and
+an M.2 drive, the cache, Explore, and 60 fps at 4K. Not yet checked there: the
+console's fonts for other scripts, USB drives, and the "System & hidden"
+total. Console runs need the owner's go-ahead; read
+[docs/platform/CONSOLE_NOTES.md](docs/platform/CONSOLE_NOTES.md) first.
 
 ## License
 
