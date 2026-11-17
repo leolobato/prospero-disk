@@ -30,7 +30,9 @@
 #include "platform/ps5/system_language.hpp"
 #include "ui/fonts.hpp"
 
+#include <cerrno>
 #include <cstring>
+#include <unistd.h>
 #include <GL/glcorearb.h>
 
 #include <cstddef>
@@ -202,12 +204,28 @@ int main()
     const std::int64_t started_us = sys::monotonic_us();
     disk::Elevation elevation;
     elevation.attempted = true;
+    const uid_t original_uid = geteuid();
+    const bool helper_present = access("/app0/lapy.elf", R_OK) == 0;
     const elevation::Status grant = elevation::request(elevation::Capability::filesystem);
     elevation.granted = grant == elevation::Status::ok;
-    elevation.diagnostic = std::string(elevation_status_name(grant)) + " via " + elevation::path();
+    // The client reports a missing helper file and a closed port 9021 alike.
+    elevation.diagnostic =
+        !helper_present && !elevation.granted
+            ? std::string("helper file /app0/lapy.elf missing")
+            : std::string(elevation_status_name(grant)) + " via " + elevation::path();
+    if (elevation.granted)
+    {
+        // As Playden does: keep the root view the grant gives, but act as the
+        // title's own user again, so that what the app writes is not owned by
+        // root; then let the helper finish settling the process.
+        if (geteuid() != original_uid && seteuid(original_uid) != 0)
+            sys::log("[HUI] elevation: effective uid restore failed (%d)", errno);
+        sys::sleep_us(1000000);
+    }
     disk::set_elevation(elevation);
-    sys::log("[HUI] elevation %s after %lld ms", elevation.diagnostic.c_str(),
-             static_cast<long long>((sys::monotonic_us() - started_us) / 1000));
+    sys::log("[HUI] elevation %s after %lld ms, euid %d", elevation.diagnostic.c_str(),
+             static_cast<long long>((sys::monotonic_us() - started_us) / 1000),
+             static_cast<int>(geteuid()));
     // What the elevation made readable (docs/PRD.md 10.1-3): to the log, and
     // beside the cache for FTP. The cache folder is the app's own (F11).
     {
