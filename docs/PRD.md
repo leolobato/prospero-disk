@@ -192,8 +192,11 @@ similar locations.
 
 The kit's baked fonts are ASCII-only. Game titles and file names contain
 Japanese, Cyrillic, accented Latin and other scripts. Adopt ProsperoEden's
-console-font engine, or at least the kit's `european` glyph set. ProsperoRadio
-took the first approach (`ADOPTING.md`, "What the first adoption taught").
+console-font engine (mirror: `gitea:leolobato/ProsperoEden.git`,
+<http://10.0.1.9:3000/leolobato/ProsperoEden>; upstream
+`github.com/blackbearreloaded/ProsperoEden`), or at least the kit's `european`
+glyph set. ProsperoRadio took the first approach (`ADOPTING.md`, "What the
+first adoption taught").
 Characters that can't be drawn render as a visible placeholder, never as a
 blank.
 
@@ -249,7 +252,31 @@ blank.
    installing on internal storage?
 5. **Scan speed on PS5.** Measure the thread-count sweet spot per volume kind.
 
-## 11. Milestones
+## 11. MVP delimitation
+
+The MVP is the smallest build that answers "what is using my space?" on a real
+console. Everything else in this PRD is v1, delivered after the MVP.
+
+| Area | MVP | After MVP (v1) |
+| --- | --- | --- |
+| Volumes | Every volume that Lapy elevation can read (§10.1), plus USB. Volume list with `statfs` bars. | Merging internal mounts into one virtual "Internal" volume, if the spike shows that is better. |
+| Elevation | The Lapy helper, plus a degraded-mode banner on failure. | — |
+| Scanner | Parallel walk, hardlink dedupe, mount-boundary and exclusion rules, small-file roll-up, cancel, progressive results. Size on disk only. | Apparent size as a second value. Per-volume thread tuning and the settings override (MVP uses fixed defaults: 8 internal/M.2, 2 USB). |
+| Visualization | Sunburst (drill in and up with springs), size-sorted list, D-pad navigation, detail panel (path, size, count), "System & hidden" segment. | Right-stick aiming at segments. Sort by name. Modified dates. |
+| Titles | Title **names** from `/user/appmeta/<ID>/param.json`. | Icons. The `app.db` fallback. |
+| Text | The kit's `european` glyph set. Characters it can't draw show as a placeholder. | The ProsperoEden font engine for full CJK/Cyrillic coverage. |
+| Cache | — (every launch rescans). | The per-volume cache (§7.4), "scanned N ago", opening instantly. |
+| Polish | Kit sounds and motion, splash. | Final icon and art, `snd0`, About screen. |
+| Distribution | Sideloaded dev build. | Update check, GitHub release, ProsperoStore catalog PR. |
+| Verification | Unit tests for the walker and layout, host snapshots, one console run with timings and a `statfs` reconciliation. | Performance targets in §7.6 met and recorded. |
+
+**MVP exit criteria:** on the console, scan the internal storage and a USB
+drive, drill into the largest game folder and see it by title name, and see a
+scanned total plus "System & hidden" that equals `statfs` used, all at 60 fps.
+
+This maps to milestones M0–M3, plus title names from M4.
+
+## 12. Milestones
 
 | # | Milestone | Done when |
 | --- | --- | --- |
