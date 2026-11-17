@@ -55,7 +55,8 @@ std::string fake_icon(std::uint32_t colour)
     return encode_png(kSize, kSize, rgba.data());
 }
 
-// Invented titles: no real product names (AGENTS.md).
+// Invented titles: no real product names (AGENTS.md). The last four are in
+// other scripts, for the text engine (docs/PRD.md 7.5).
 struct FakeTitle
 {
     const char *id;
@@ -73,10 +74,12 @@ constexpr FakeTitle kTitles[] = {
     {"PPSA13311", "Neon Harbour", 22 * kGB, 0x06b6d4},
     {"PPSA14556", "Quiet Summit", 12 * kGB, 0x84cc16},
     {"PPSA15003", "Tiny Engines", 6 * kGB, 0xf97316},
-    {"PPSA15790", "Moss & Marble", 3 * kGB, 0x10b981},
-    {"PPSA16234", "Signal Lost", 1200 * kMB, 0xec4899},
-    {"PPSA17702", "Lighthouse Keeper", 700 * kMB, 0x0ea5e9},
-    {"PPSA18815", "Kite Season", 260 * kMB, 0xeab308},
+    {"PPSA15790", "Caf\u00e9 Lumi\u00e8re", 3 * kGB, 0x10b981},
+    {"PPSA16234", "\u661f\u306e\u706f\u53f0", 1200 * kMB, 0xec4899},
+    {"PPSA17702", "\u0421\u0435\u0432\u0435\u0440\u043d\u044b\u0439 \u0432\u0435\u0442\u0435\u0440",
+     700 * kMB, 0x0ea5e9},
+    {"PPSA18815", "\u0631\u062d\u0644\u0629 \u0627\u0644\u0635\u062d\u0631\u0627\u0621", 260 * kMB,
+     0xeab308},
 };
 
 class FixtureFileSystem final : public FileSystem
