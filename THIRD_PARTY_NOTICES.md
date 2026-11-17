@@ -15,7 +15,7 @@ ps5-homebrew-ui exists thanks to the maintainers and contributors of:
   [Press Start 2P](https://fonts.google.com/specimen/Press+Start+2P) and
   [Patrick Hand](https://fonts.google.com/specimen/Patrick+Hand) for the
   interface typefaces, and
-  [stb](https://github.com/nothings/stb) for music decoding, font baking and
+  [stb](https://github.com/nothings/stb) for music decoding, title-icon decoding, font baking and
   PNG writing;
 - [MkPFS](https://github.com/PSBrew/MkPFS),
   [UFS2Tool](https://github.com/SvenGDK/UFS2Tool), LLVM/Clang, Python, zlib and
