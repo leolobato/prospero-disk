@@ -4,6 +4,8 @@
 
 #include "disk/titles.hpp"
 
+#include "disk/sqlite.hpp"
+
 #include <algorithm>
 #include <cctype>
 #include <map>
@@ -279,8 +281,56 @@ std::string title_name_from_param_json(std::string_view json)
     return string_member(root, "titleName");
 }
 
-TitleLoader::TitleLoader(const FileSystem &fs, std::vector<std::string> roots, int icon_size)
-    : fs_(fs), roots_(std::move(roots)), icon_size_(icon_size), thread_([this] { run(); })
+std::string title_name_from_app_db(const std::string &path, std::string_view id)
+{
+    sqlite3 *db = nullptr;
+    const std::string uri = "file:" + path + "?immutable=1";
+    if (sqlite3_open_v2(uri.c_str(), &db, sqlite::kOpenReadOnly | sqlite::kOpenUri, nullptr) !=
+        sqlite::kOk)
+    {
+        sqlite3_close(db);
+        return {};
+    }
+    std::vector<std::string> tables;
+    sqlite3_stmt *list = nullptr;
+    if (sqlite3_prepare_v2(db,
+                           "SELECT name FROM sqlite_master WHERE type = 'table' AND name LIKE "
+                           "'tbl\\_appbrowse\\_%' ESCAPE '\\' ORDER BY name",
+                           -1, &list, nullptr) == sqlite::kOk)
+        while (sqlite3_step(list) == sqlite::kRow)
+            if (const unsigned char *name = sqlite3_column_text(list, 0))
+                tables.emplace_back(reinterpret_cast<const char *>(name));
+    sqlite3_finalize(list);
+
+    std::string found;
+    const std::string key(id);
+    for (const std::string &table : tables)
+    {
+        // The name comes from sqlite_master; quote it as an identifier anyway.
+        std::string quoted;
+        for (const char c : table)
+            quoted += c == '"' ? std::string("\"\"") : std::string(1, c);
+        const std::string sql =
+            "SELECT titleName FROM \"" + quoted + "\" WHERE titleId = ?1 LIMIT 1";
+        sqlite3_stmt *query = nullptr;
+        if (sqlite3_prepare_v2(db, sql.c_str(), -1, &query, nullptr) == sqlite::kOk &&
+            sqlite3_bind_text(query, 1, key.c_str(), static_cast<int>(key.size()), nullptr) ==
+                sqlite::kOk &&
+            sqlite3_step(query) == sqlite::kRow)
+            if (const unsigned char *name = sqlite3_column_text(query, 0))
+                found = reinterpret_cast<const char *>(name);
+        sqlite3_finalize(query);
+        if (!found.empty())
+            break;
+    }
+    sqlite3_close(db);
+    return found;
+}
+
+TitleLoader::TitleLoader(const FileSystem &fs, std::vector<std::string> roots, int icon_size,
+                         std::string app_db)
+    : fs_(fs), roots_(std::move(roots)), icon_size_(icon_size), app_db_(std::move(app_db)),
+      thread_([this] { run(); })
 {
 }
 
@@ -360,6 +410,8 @@ TitleInfo TitleLoader::load(const std::string &id) const
         if (!info.name.empty())
             break;
     }
+    if (info.name.empty() && !app_db_.empty())
+        info.name = title_name_from_app_db(app_db_, id);
     return info;
 }
 

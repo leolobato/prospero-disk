@@ -160,6 +160,7 @@ fi
 
 # HarfBuzz shapes text in other scripts (src/third_party/harfbuzz, src/gfx/system_fonts.cpp).
 harfbuzz_include=$(bash "$root/tools/fetch-harfbuzz.sh")
+bash "$root/tools/fetch-sqlite.sh" >/dev/null # src/third_party/sqlite/sqlite.c includes it
 
 objects=()
 for source in "${sources[@]}"; do

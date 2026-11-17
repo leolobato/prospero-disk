@@ -18,6 +18,7 @@ build="$root/build/host-snapshots"
 ninja_begin "$build/build.ninja"
 
 harfbuzz_include=$(bash "$root/tools/fetch-harfbuzz.sh")
+bash "$root/tools/fetch-sqlite.sh" >/dev/null # src/third_party/sqlite/sqlite.c includes it
 
 # Everything under src/ except the console platform layer and entry point.
 sources=("$root/host/snapshot_main.cpp" "$root/host/manifest.cpp" "$root/host/platform_host.cpp")

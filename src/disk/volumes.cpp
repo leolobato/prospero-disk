@@ -96,6 +96,7 @@ Environment make_environment()
     env.fs = make_posix_filesystem();
     env.specs = console_volume_specs();
     env.appmeta_roots = {"/user/appmeta", "/user/appmeta/external"};
+    env.app_db = "/system_data/priv/mms/app.db";
     // /data needs the elevation; without it the title keeps its own storage.
     env.cache_dir =
         env.elevation.granted ? "/data/prospero-disk/cache" : "/download0/prospero-disk/cache";
@@ -107,6 +108,8 @@ Environment make_environment()
         env.specs = parse_volumes(volumes);
         if (const char *cache = std::getenv("PD_CACHE"); cache != nullptr)
             env.cache_dir = cache;
+        if (const char *db = std::getenv("PD_APP_DB"); db != nullptr)
+            env.app_db = db;
     }
     else
     {

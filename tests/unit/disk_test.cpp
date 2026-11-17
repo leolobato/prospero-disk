@@ -6,6 +6,7 @@
 #include "disk/format.hpp"
 #include "disk/png.hpp"
 #include "disk/scanner.hpp"
+#include "disk/sqlite.hpp"
 #include "disk/sunburst.hpp"
 #include "disk/titles.hpp"
 #include "disk/volumes.hpp"
@@ -394,6 +395,44 @@ TEST(DiskTitles, LoaderReadsNamesAndIconsInTheBackground)
     EXPECT_EQ(done[0].icon.width, 32);
     EXPECT_TRUE(done[1].name.empty());
     EXPECT_TRUE(loader.poll().empty());
+}
+
+// The console's app.db, in miniature: one table per user, as on a PS5.
+TEST(DiskTitles, AppDbNamesWhatParamJsonDoesNot)
+{
+    char dir[] = "/tmp/pd-appdb-XXXXXX";
+    ASSERT_NE(mkdtemp(dir), nullptr);
+    const std::string path = std::string(dir) + "/app.db";
+    sqlite3 *db = nullptr;
+    ASSERT_EQ(sqlite3_open_v2(path.c_str(), &db,
+                              hui::disk::sqlite::kOpenReadWrite | hui::disk::sqlite::kOpenCreate,
+                              nullptr),
+              hui::disk::sqlite::kOk);
+    ASSERT_EQ(sqlite3_exec(db,
+                           "CREATE TABLE tbl_appbrowse_0507646227 (titleId TEXT, titleName TEXT);"
+                           "CREATE TABLE tbl_other (titleId TEXT, titleName TEXT);"
+                           "INSERT INTO tbl_other VALUES ('PPSA55555', 'Wrong table');"
+                           "INSERT INTO tbl_appbrowse_0507646227 VALUES "
+                           "('PPSA55555', 'Orchard \"Two\"');",
+                           nullptr, nullptr, nullptr),
+              hui::disk::sqlite::kOk);
+    sqlite3_close(db);
+
+    EXPECT_EQ(title_name_from_app_db(path, "PPSA55555"), "Orchard \"Two\"");
+    EXPECT_EQ(title_name_from_app_db(path, "PPSA00000"), "");
+    EXPECT_EQ(title_name_from_app_db(std::string(dir) + "/missing.db", "PPSA55555"), "");
+
+    // The loader asks app.db only when no param.json names the title.
+    const auto fs = make_fixture_filesystem();
+    TitleLoader loader(*fs, {std::string(kFixtureRoot) + "/appmeta"}, 32, path);
+    loader.request("PPSA55555");
+    loader.request("PPSA10021");
+    loader.wait_idle();
+    const std::vector<TitleInfo> done = loader.poll();
+    ASSERT_EQ(done.size(), 2u);
+    EXPECT_EQ(done[0].name, "Orchard \"Two\"");
+    EXPECT_EQ(done[1].name, "Starlight Courier");
+    EXPECT_EQ(std::system(("rm -rf '" + std::string(dir) + "'").c_str()), 0);
 }
 
 TEST(DiskPng, StoredPngDecodesAndShrinks)

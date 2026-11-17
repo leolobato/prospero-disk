@@ -303,7 +303,7 @@ class Disk final : public app::Concept
   public:
     explicit Disk(app::Context &context)
         : context_(context), env_(dk::make_environment()),
-          titles_(*env_.fs, env_.appmeta_roots, 128)
+          titles_(*env_.fs, env_.appmeta_roots, 128, env_.app_db)
     {
         const ui::Theme &theme = app_theme();
         volume_list_.style.theme = theme;

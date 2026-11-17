@@ -37,6 +37,7 @@ while IFS= read -r line; do
 done < "$root/tests/unit/sources.txt"
 
 harfbuzz_include=$(bash "$root/tools/fetch-harfbuzz.sh")
+bash "$root/tools/fetch-sqlite.sh" >/dev/null # src/third_party/sqlite/sqlite.c includes it
 
 objects=()
 for source in "${sources[@]}"; do

@@ -61,6 +61,7 @@ struct Environment
     std::unique_ptr<FileSystem> fs;
     std::vector<VolumeSpec> specs;
     std::vector<std::string> appmeta_roots; // where <id>/param.json lives
+    std::string app_db;                     // the console's app.db (name fallback)
     std::string cache_dir;                  // empty: no cache
     Elevation elevation;
     bool fixture = false;
