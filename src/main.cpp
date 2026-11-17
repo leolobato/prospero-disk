@@ -209,14 +209,8 @@ int main()
     // What the elevation made readable (docs/PRD.md 10.1-3): to the log, and
     // beside the cache for FTP. The cache folder is the app's own (F11).
     {
-        const std::string report = ps5::probe_storage();
-        std::size_t at = 0;
-        while (at < report.size())
-        {
-            const std::size_t end = report.find('\n', at);
-            sys::log("[PD] %s", report.substr(at, end - at).c_str());
-            at = end == std::string::npos ? report.size() : end + 1;
-        }
+        const std::string report =
+            ps5::probe_storage([](const std::string &text) { sys::log("[PD] %s", text.c_str()); });
         const std::string dir =
             elevation.granted ? "/data/prospero-disk" : "/download0/prospero-disk";
         if (save::ensure_directory(dir))
