@@ -9,11 +9,10 @@
 #include <cerrno>
 #include <cstdarg>
 #include <cstdio>
+#include <cstring>
 #include <dirent.h>
 #include <functional>
 #include <string>
-#include <sys/mount.h>
-#include <sys/param.h>
 #include <sys/stat.h>
 #include <vector>
 
@@ -40,11 +39,6 @@ void line(std::string &out, const char *format, ...)
         (*g_emit)(text);
 }
 
-unsigned long long gib(unsigned long long bytes)
-{
-    return bytes >> 30;
-}
-
 void probe_path(std::string &out, const std::string &path, bool elevated)
 {
     struct stat st
@@ -67,24 +61,11 @@ void probe_path(std::string &out, const std::string &path, bool elevated)
     }
     else
         list_error = errno;
-    struct statfs fs
-    {
-    };
-    bool fs_ok = false;
-    if (elevated)
-    {
-        line(out, "  statfs %s", path.c_str());
-        fs_ok = statfs(path.c_str(), &fs) == 0;
-    }
-    const auto unit = static_cast<unsigned long long>(fs.f_bsize);
-    line(out,
-         "path %s stat=%s(errno %d) dev=%llu list=%d(errno %d) statfs=%s type=%s from=%s "
-         "total=%lluGiB used=%lluGiB",
-         path.c_str(), stat_ok ? "ok" : "fail", stat_error,
-         static_cast<unsigned long long>(st.st_dev), entries, list_error, fs_ok ? "ok" : "fail",
-         fs_ok ? fs.f_fstypename : "-", fs_ok ? fs.f_mntfromname : "-",
-         gib(static_cast<unsigned long long>(fs.f_blocks) * unit),
-         gib(static_cast<unsigned long long>(fs.f_blocks - fs.f_bfree) * unit));
+    // No statfs: it ends the process on the console, elevated or not.
+    (void)elevated;
+    line(out, "path %s stat=%s(errno %d) dev=%llu list=%d(errno %d)", path.c_str(),
+         stat_ok ? "ok" : "fail", stat_error, static_cast<unsigned long long>(st.st_dev), entries,
+         list_error);
 }
 
 // st_blocks x 512 against st_size for the first regular files under a folder:
@@ -125,14 +106,13 @@ std::string probe_storage(bool elevated, const std::function<void(const std::str
     std::string out;
     line(out, "prospero-disk storage probe");
 
-    std::vector<std::string> paths = {"/",
-                                      "/system",
-                                      "/system_data",
-                                      "/preinst/common/font",
-                                      "/user/appmeta",
-                                      "/system_data/priv/mms"};
+    // The volumes first, then the metadata folders.
+    std::vector<std::string> paths;
     for (const disk::VolumeSpec &spec : disk::console_volume_specs())
         paths.push_back(spec.path);
+    for (const char *other : {"/system_data", "/preinst/common/font", "/user/appmeta",
+                              "/system_data/priv/mms", "/system", "/"})
+        paths.emplace_back(other);
     for (const std::string &path : paths)
         probe_path(out, path, elevated);
     probe_path(out, "/system_data/priv/mms/app.db", elevated);
@@ -142,28 +122,7 @@ std::string probe_storage(bool elevated, const std::function<void(const std::str
     budget = 3;
     probe_blocks(out, "/mnt/usb0", 2, &budget);
 
-    if (!elevated)
-    {
-        line(out, "not elevated: statfs and getfsstat skipped");
-        g_emit = nullptr;
-        return out;
-    }
-    line(out, "getfsstat next");
-    const int count = getfsstat(nullptr, 0, MNT_NOWAIT);
-    line(out, "mounts %d (errno %d)", count, count < 0 ? errno : 0);
-    if (count > 0)
-    {
-        std::vector<struct statfs> mounts(static_cast<std::size_t>(count) + 8);
-        const int got = getfsstat(
-            mounts.data(), static_cast<long>(mounts.size() * sizeof(struct statfs)), MNT_NOWAIT);
-        for (int i = 0; i < got; ++i)
-        {
-            const struct statfs &m = mounts[static_cast<std::size_t>(i)];
-            line(out, "mount %s on %s type %s flags=0x%llx total=%lluGiB", m.f_mntfromname,
-                 m.f_mntonname, m.f_fstypename, static_cast<unsigned long long>(m.f_flags),
-                 gib(static_cast<unsigned long long>(m.f_blocks) * m.f_bsize));
-        }
-    }
+    line(out, "statfs and getfsstat not called: they end the process on this console");
     g_emit = nullptr;
     return out;
 }

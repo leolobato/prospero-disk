@@ -8,10 +8,7 @@
 #include <cstdio>
 #include <dirent.h>
 #include <sys/stat.h>
-#if defined(__PROSPERO__)
-#include <sys/mount.h>
-#include <sys/param.h>
-#else
+#if !defined(__PROSPERO__)
 #include <sys/statvfs.h>
 #endif
 #include <unistd.h>
@@ -104,17 +101,11 @@ class PosixFileSystem final : public FileSystem
         if (!allow_space_)
             return false;
 #if defined(__PROSPERO__)
-        // statvfs from the console's libc ends the process in a title's
-        // sandbox (seen on 13.60); the kernel's statfs answers the same.
-        struct statfs fs
-        {
-        };
-        if (statfs(path.c_str(), &fs) != 0)
-            return false;
-        const auto unit = static_cast<std::uint64_t>(fs.f_bsize);
-        out->total = static_cast<std::uint64_t>(fs.f_blocks) * unit;
-        out->free = fs.f_bavail > 0 ? static_cast<std::uint64_t>(fs.f_bavail) * unit : 0u;
-        const auto unused = static_cast<std::uint64_t>(fs.f_bfree) * unit;
+        // statfs ends the process on the console (13.60), elevated or not and
+        // on any path (docs/PRD.md 10): volume sizes are unknown there.
+        (void)path;
+        (void)out;
+        return false;
 #else
         struct statvfs vfs
         {
@@ -125,9 +116,9 @@ class PosixFileSystem final : public FileSystem
         out->total = static_cast<std::uint64_t>(vfs.f_blocks) * unit;
         out->free = static_cast<std::uint64_t>(vfs.f_bavail) * unit;
         const std::uint64_t unused = static_cast<std::uint64_t>(vfs.f_bfree) * unit;
-#endif
         out->used = out->total > unused ? out->total - unused : 0u;
         return true;
+#endif
     }
 
     bool read_file(const std::string &path, std::string *out, std::size_t max_bytes) const override
