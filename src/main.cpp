@@ -24,6 +24,7 @@
 #include "platform/ps5/audio_out.hpp"
 #include "platform/ps5/display_egl.hpp"
 #include "platform/ps5/pad.hpp"
+#include "platform/ps5/storage_probe.hpp"
 #include "platform/ps5/elevation/elevation.hpp"
 #include "platform/ps5/system.hpp"
 #include "platform/ps5/system_language.hpp"
@@ -205,6 +206,22 @@ int main()
     elevation.diagnostic = std::string(elevation_status_name(grant)) + " via " + elevation::path();
     disk::set_elevation(elevation);
     sys::log("[HUI] elevation %s", elevation.diagnostic.c_str());
+    // What the elevation made readable (docs/PRD.md 10.1-3): to the log, and
+    // beside the cache for FTP. The cache folder is the app's own (F11).
+    {
+        const std::string report = ps5::probe_storage();
+        std::size_t at = 0;
+        while (at < report.size())
+        {
+            const std::size_t end = report.find('\n', at);
+            sys::log("[PD] %s", report.substr(at, end - at).c_str());
+            at = end == std::string::npos ? report.size() : end + 1;
+        }
+        const std::string dir =
+            elevation.granted ? "/data/prospero-disk" : "/download0/prospero-disk";
+        if (save::ensure_directory(dir))
+            (void)save::write_atomic(dir + "/probe.txt", report);
+    }
     sys::log("[HUI] storage dir=%d", save::ensure_directory(kDataRoot) ? 1 : 0);
 
     // The display opens at the saved resolution (1080p if that fails).
