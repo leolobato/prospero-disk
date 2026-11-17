@@ -32,6 +32,13 @@ done
 bash "$root/tools/setup-native-dependencies.sh" >/dev/null
 
 param="$root/sce_sys/param.json"
+# APP_LAPY_HELPER=1 packages the exact-title Lapy sandbox-elevation helper
+# (tools/build-lapy-helper.py; src/platform/ps5/elevation is its client).
+app_lapy_helper=${APP_LAPY_HELPER:-0}
+[[ $app_lapy_helper == 0 || $app_lapy_helper == 1 ]] || {
+    echo "APP_LAPY_HELPER must be 0 or 1" >&2
+    exit 2
+}
 title_id=$(python3 - "$param" <<'PY'
 import json, re, sys
 
@@ -151,6 +158,9 @@ if (( ${#pacbrew_packages[@]} > 0 || ${#pacbrew_includes[@]} > 0 || ${#pacbrew_a
     printf 'PacBrew dependencies: %s\n' "${pacbrew_packages[*]:-(manual archives)}"
 fi
 
+# HarfBuzz shapes text in other scripts (src/third_party/harfbuzz, src/gfx/system_fonts.cpp).
+harfbuzz_include=$(bash "$root/tools/fetch-harfbuzz.sh")
+
 objects=()
 for source in "${sources[@]}"; do
     [[ $source =~ ^src/[A-Za-z0-9_./-]+\.(c|cc|cpp)$ && -f $root/$source ]] || {
@@ -175,6 +185,7 @@ for source in "${sources[@]}"; do
         }
         args+=("-I$root/$include")
     done
+    args+=(-isystem "$harfbuzz_include")
     args+=("${pacbrew_cflags[@]}")
     ninja_inputs=("$root/$source" "$root/tooling/prospero-clang18" "$target_compiler")
     ninja_edge CC "$object" env PS5_PAYLOAD_SDK="$sdk_root" \
@@ -267,6 +278,23 @@ for dir in "$app/assets/audio/music" "$app"/assets/audio/sfx/*/; do
     [[ -d $dir ]] || continue
     (cd "$dir" && find . -maxdepth 1 -type f ! -name index.txt -printf '%f\n' | LC_ALL=C sort > index.txt)
 done
+
+if [[ $app_lapy_helper == 1 ]]; then
+    helper="$build/lapy-helper/$title_id"
+    python3 "$root/tools/build-lapy-helper.py" "$title_id" "$helper"
+    cp "$helper/lapy.elf" "$app/lapy.elf"
+    cp "$helper/lapy-manifest.json" "$app/lapy-manifest.json"
+    mkdir -p "$app/licenses"
+    cp "$helper/Lapy-MIT.txt" "$app/licenses/Lapy-MIT.txt"
+    python3 - "$app" "$title_id" <<'PY'
+import hashlib, json, pathlib, sys
+app = pathlib.Path(sys.argv[1])
+manifest = json.loads((app / "lapy-manifest.json").read_text())
+actual = hashlib.sha256((app / "lapy.elf").read_bytes()).hexdigest()
+assert manifest["elf_sha256"] == actual
+assert manifest["target_title"] == sys.argv[2] and manifest["mode"] == "elf-helper"
+PY
+fi
 
 [[ -f $root/runtime/libc.prx ]] || bash "$root/tools/rebuild-libc.sh"
 (cd "$root/runtime" && sha256sum --check --strict libc.prx.sha256)

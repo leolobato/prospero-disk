@@ -7,6 +7,7 @@
 // markers and frame pacing are logged for hardware runs.
 
 #include "app/shell.hpp"
+#include "disk/volumes.hpp"
 #include "app/tour.hpp"
 #include "audio/cues.hpp"
 #include "audio/mixer.hpp"
@@ -19,10 +20,13 @@
 #include "demo/catalog.hpp"
 #include "gfx/canvas.hpp"
 #include "gfx/renderer.hpp"
+#include "gfx/system_fonts.hpp"
 #include "platform/ps5/audio_out.hpp"
 #include "platform/ps5/display_egl.hpp"
 #include "platform/ps5/pad.hpp"
+#include "platform/ps5/elevation/elevation.hpp"
 #include "platform/ps5/system.hpp"
+#include "platform/ps5/system_language.hpp"
 #include "ui/fonts.hpp"
 
 #include <cstring>
@@ -41,6 +45,38 @@ extern "C" void hui_heap_stats(std::size_t *live_bytes, std::size_t *peak_bytes,
 
 namespace
 {
+
+const char *elevation_status_name(elevation::Status status)
+{
+    switch (status)
+    {
+    case elevation::Status::ok:
+        return "ok";
+    case elevation::Status::invalid_request:
+        return "invalid request";
+    case elevation::Status::unsupported_version:
+        return "unsupported version";
+    case elevation::Status::unsupported_capability:
+        return "unsupported capability";
+    case elevation::Status::target_mismatch:
+        return "target mismatch";
+    case elevation::Status::unavailable:
+        return "unavailable (no ELF loader on port 9021 and no Lapy service)";
+    case elevation::Status::prepare_failed:
+        return "prepare failed";
+    case elevation::Status::apply_failed:
+        return "apply failed";
+    case elevation::Status::rollback_failed:
+        return "rollback failed";
+    case elevation::Status::transport_error:
+        return "transport error";
+    case elevation::Status::protocol_error:
+        return "protocol error";
+    case elevation::Status::timeout:
+        return "timeout";
+    }
+    return "unknown";
+}
 
 constexpr const char *kAssets = "/app0/assets";
 // Settings live in the title's own save area.
@@ -93,7 +129,7 @@ bool open_display(hui::ps5::Display &display, int *resolution)
 }
 
 bool load_font(hui::gfx::Renderer &renderer, const char *name, hui::gfx::Font *font,
-               hui::ui::FontRef *ref)
+               hui::ui::FontRef *ref, bool system_fonts = false)
 {
     std::string data;
     const std::string path = std::string(kAssets) + "/fonts/" + name;
@@ -103,7 +139,13 @@ bool load_font(hui::gfx::Renderer &renderer, const char *name, hui::gfx::Font *f
         return false;
     }
     ref->font = font;
+    // The faces that draw names (files, titles) also take other scripts from
+    // the console's own fonts (docs/PRD.md 7.5), before the texture exists.
+    const std::size_t extra =
+        system_fonts ? hui::gfx::attach_system_fonts(*font, hui::ps5::current_language_tag()) : 0;
     ref->texture = renderer.batch().create_font_texture(*font);
+    if (extra != 0)
+        renderer.track_font(ref->texture, font);
     return true;
 }
 
@@ -153,6 +195,16 @@ int main()
 {
     using namespace hui;
     sys::log("[HUI] entry");
+
+    // Sandbox elevation (docs/PRD.md 7.2): once, before EGL or any other
+    // thread exists. A failure leaves the app in its degraded mode.
+    disk::Elevation elevation;
+    elevation.attempted = true;
+    const elevation::Status grant = elevation::request(elevation::Capability::filesystem);
+    elevation.granted = grant == elevation::Status::ok;
+    elevation.diagnostic = std::string(elevation_status_name(grant)) + " via " + elevation::path();
+    disk::set_elevation(elevation);
+    sys::log("[HUI] elevation %s", elevation.diagnostic.c_str());
     sys::log("[HUI] storage dir=%d", save::ensure_directory(kDataRoot) ? 1 : 0);
 
     // The display opens at the saved resolution (1080p if that fails).
@@ -174,8 +226,8 @@ int main()
     gfx::Font hand;
     ui::Fonts fonts;
     if (!renderer.init() ||
-        !load_font(renderer, "inter-regular.huifont", &regular, &fonts.regular) ||
-        !load_font(renderer, "inter-semibold.huifont", &semibold, &fonts.semibold) ||
+        !load_font(renderer, "inter-regular.huifont", &regular, &fonts.regular, true) ||
+        !load_font(renderer, "inter-semibold.huifont", &semibold, &fonts.semibold, true) ||
         !load_font(renderer, "montserrat-medium.huifont", &display_font, &fonts.display) ||
         !load_font(renderer, "dejavu-sans-mono.huifont", &mono, &fonts.mono) ||
         !load_font(renderer, "press-start-2p.huifont", &pixel, &fonts.pixel) ||
@@ -209,6 +261,8 @@ int main()
         sys::log("[HUI] sound rejected %s", error.c_str());
 
     app::Shell shell(fonts, catalog, kDataRoot, renderer.glass_texture());
+    shell.set_texture_factory([&renderer](int width, int height, const std::uint8_t *rgba)
+                              { return renderer.batch().create_texture(width, height, rgba); });
     const std::string version = read_content_version("/app0/sce_sys/param.json");
     shell.set_version(version);
     sys::log("[HUI] version %s designs=%zu", version.empty() ? "unknown" : version.c_str(),
