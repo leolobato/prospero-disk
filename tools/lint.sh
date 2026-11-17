@@ -27,9 +27,13 @@ for file in "${repository_files[@]}"; do
     case "$file" in
         *.c|*.cc|*.cpp|*.h|*.hpp|*.ld|*.py|*.ps1|*.sh|*.yml|*.yaml|Makefile|.clang-format|.clang-tidy|.env.example)
             header=$(head -n 20 "$file")
-            grep -Eq 'ps5-homebrew-ui|ps5-native-app-boilerplate' <<<"$header"
-            grep -Fq 'Copyright (C) 2026 BlackBearReloaded' <<<"$header"
-            grep -Fq 'SPDX-License-Identifier: GPL-3.0-or-later' <<<"$header"
+            # Kit files keep the kit's header; Prospero Disk's own files carry the app's.
+            if ! grep -Eq 'ps5-homebrew-ui|ps5-native-app-boilerplate|Prospero Disk' <<<"$header" ||
+                ! grep -Eq 'Copyright \(C\) 2026 (BlackBearReloaded|Leonardo Lobato)' <<<"$header" ||
+                ! grep -Fq 'SPDX-License-Identifier: GPL-3.0-or-later' <<<"$header"; then
+                echo "missing or wrong license header: $file" >&2
+                exit 1
+            fi
             ((checked += 1))
             ;;
         *.cs|*.csproj)
