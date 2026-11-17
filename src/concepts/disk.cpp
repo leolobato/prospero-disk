@@ -210,8 +210,8 @@ View build_view(const dk::Tree &tree, std::uint32_t centre, bool by_name, std::u
         r.node_kind = n.kind;
         r.flags = n.flags;
         r.name = std::string(tree.name(c));
-        if (n.kind == dk::Kind::directory && dk::is_title_id(r.name))
-            r.title_id = r.name;
+        if (n.kind == dk::Kind::directory)
+            r.title_id = std::string(dk::title_id_of_folder(r.name));
         r.disk = n.disk;
         r.apparent = n.apparent;
         r.files = n.files;
@@ -707,6 +707,16 @@ class Disk final : public app::Concept
     {
         const VolumeState &v = volumes_[current_volume_];
         view_ = build_view(*v.tree, centre, by_name_, hidden_bytes(v, centre));
+        // Playden's game folders are named by store ID ("2610"); its PS5 title
+        // for the game carries the name and icon.
+        for (Row &r : view_.rows)
+        {
+            if (!r.title_id.empty() || r.node_kind != dk::Kind::directory)
+                continue;
+            const auto it = env_.playden_titles.find(dk::playden_install_id(view_.path, r.name));
+            if (it != env_.playden_titles.end())
+                r.title_id = it->second;
+        }
         std::vector<ui::ListItem> items;
         int focus = 0;
         for (std::size_t i = 0; i < view_.rows.size(); ++i)
@@ -1129,9 +1139,9 @@ class Disk final : public app::Concept
 
     std::string title_name(std::string_view name) const
     {
-        if (dk::is_title_id(name))
+        if (const std::string_view id = dk::title_id_of_folder(name); !id.empty())
         {
-            const auto it = titles_by_id_.find(std::string(name));
+            const auto it = titles_by_id_.find(std::string(id));
             if (it != titles_by_id_.end() && !it->second.name.empty())
                 return it->second.name;
         }
@@ -1202,7 +1212,7 @@ class Disk final : public app::Concept
         if (r.kind == dk::SegmentKind::hidden)
             sub = "Used space the scan cannot see";
         else if (!r.title_id.empty())
-            sub = r.title_id;
+            sub = r.name; // the folder: "PPSA28416", or "PPSA28416-app0" beside its patch
         else if (r.node_kind == dk::Kind::other_files)
             sub = dk::format_count(r.files) + " smaller files";
         else if (r.node_kind == dk::Kind::file)
@@ -1244,7 +1254,7 @@ class Disk final : public app::Concept
                      kInk);
             return;
         }
-        std::string line1 = r.title_id.empty() ? "" : r.title_id + kDot;
+        std::string line1 = r.title_id.empty() ? "" : r.name + kDot;
         line1 += dk::format_bytes(r.disk) + " on disk" + kDot + dk::format_bytes(r.apparent) +
                  " apparent";
         ui::text(list, regular, regular.font->fit(line1, 22, w), x, panel.y + 92, 22, kMuted);

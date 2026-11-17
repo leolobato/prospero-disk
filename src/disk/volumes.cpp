@@ -4,6 +4,8 @@
 
 #include "disk/volumes.hpp"
 
+#include "disk/titles.hpp"
+
 #include <cstdlib>
 
 namespace hui::disk
@@ -45,6 +47,24 @@ std::vector<VolumeSpec> parse_volumes(const std::string &text)
 }
 #endif
 
+// A drive's folder under /mnt exists whether or not a drive is mounted on
+// it (on the console /mnt/ext0 and /mnt/usb2-7 are listable, empty folders of
+// /mnt's own file system). Only a folder on another device than its parent
+// is a mounted drive. When either lstat fails, the folder is kept.
+bool is_mounted(const FileSystem &fs, const VolumeSpec &spec)
+{
+    if (spec.kind != VolumeKind::extended && spec.kind != VolumeKind::usb)
+        return true;
+    const std::size_t slash = spec.path.find_last_of('/');
+    if (slash == std::string::npos || slash == 0)
+        return true;
+    Entry self;
+    Entry parent;
+    if (!fs.stat(spec.path, &self) || !fs.stat(spec.path.substr(0, slash), &parent))
+        return true;
+    return self.device != parent.device;
+}
+
 } // namespace
 
 std::vector<VolumeSpec> console_volume_specs()
@@ -69,6 +89,8 @@ std::vector<Volume> detect_volumes(const FileSystem &fs, const std::vector<Volum
     {
         int error = 0;
         if (!fs.list(spec.path, &entries, &error))
+            continue;
+        if (!is_mounted(fs, spec))
             continue;
         Volume v;
         v.spec = spec;
@@ -97,6 +119,8 @@ Environment make_environment()
     env.specs = console_volume_specs();
     env.appmeta_roots = {"/user/appmeta", "/user/appmeta/external"};
     env.app_db = "/system_data/priv/mms/app.db";
+    if (env.elevation.granted)
+        env.playden_titles = read_playden_titles(*env.fs, "/data/homebrew");
     // /data needs the elevation; without it the title keeps its own storage.
     env.cache_dir =
         env.elevation.granted ? "/data/prospero-disk/cache" : "/download0/prospero-disk/cache";
@@ -110,6 +134,8 @@ Environment make_environment()
             env.cache_dir = cache;
         if (const char *db = std::getenv("PD_APP_DB"); db != nullptr)
             env.app_db = db;
+        if (const char *homebrew = std::getenv("PD_HOMEBREW"); homebrew != nullptr)
+            env.playden_titles = read_playden_titles(*env.fs, homebrew);
     }
     else
     {

@@ -13,13 +13,17 @@
 
 #include <gtest/gtest.h>
 
+#include <cerrno>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <fcntl.h>
+#include <map>
 #include <string>
 #include <sys/stat.h>
 #include <unistd.h>
+#include <utility>
+#include <vector>
 
 namespace
 {
@@ -368,6 +372,13 @@ TEST(DiskTitles, RecognisesIdsAndReadsParamJson)
     EXPECT_FALSE(is_title_id("ppsa01467"));
     EXPECT_FALSE(is_title_id("PPSA0146"));
     EXPECT_FALSE(is_title_id("download"));
+    EXPECT_EQ(title_id_of_folder("PPSA01467"), "PPSA01467");
+    EXPECT_EQ(title_id_of_folder("PPSA28416-app0"), "PPSA28416");
+    EXPECT_EQ(title_id_of_folder("PPSA28416-patch0"), "PPSA28416");
+    EXPECT_EQ(title_id_of_folder("CUSA00001_00"), "CUSA00001");
+    EXPECT_EQ(title_id_of_folder("PPSA284160"), "");
+    EXPECT_EQ(title_id_of_folder("PPSA2841-app0"), "");
+    EXPECT_EQ(title_id_of_folder("download0"), "");
 
     EXPECT_EQ(
         title_name_from_param_json(
@@ -485,6 +496,154 @@ TEST(DiskVolumes, FixtureVolumesAreDetected)
     EXPECT_EQ(volumes[0].space.total, kFixtureTotal);
     EXPECT_EQ(default_threads(VolumeKind::usb), 2);
     EXPECT_EQ(default_threads(VolumeKind::internal), 8);
+}
+
+// A FileSystem of folders that each have a device number.
+class DeviceFileSystem final : public FileSystem
+{
+  public:
+    explicit DeviceFileSystem(std::vector<std::pair<std::string, std::uint64_t>> folders)
+        : folders_(std::move(folders))
+    {
+    }
+    bool list(const std::string &path, std::vector<Entry> *out, int *error) const override
+    {
+        out->clear();
+        Entry e;
+        *error = ENOENT;
+        return stat(path, &e);
+    }
+    bool stat(const std::string &path, Entry *out) const override
+    {
+        for (const auto &[name, device] : folders_)
+        {
+            if (name == path)
+            {
+                out->name = name;
+                out->type = EntryType::directory;
+                out->device = device;
+                return true;
+            }
+        }
+        return false;
+    }
+    bool space(const std::string &, SpaceInfo *) const override
+    {
+        return false;
+    }
+    bool read_file(const std::string &, std::string *, std::size_t) const override
+    {
+        return false;
+    }
+
+  private:
+    std::vector<std::pair<std::string, std::uint64_t>> folders_;
+};
+
+TEST(DiskVolumes, EmptyMountFoldersAreNotDrives)
+{
+    // As on a console with one M.2 drive and one USB drive: /mnt/ext0 and
+    // /mnt/usb1 are listable folders of /mnt's own file system.
+    const DeviceFileSystem fs({{"/user", 0},
+                               {"/mnt", 7},
+                               {"/mnt/ext0", 7},
+                               {"/mnt/ext1", 0},
+                               {"/mnt/usb0", 255},
+                               {"/mnt/usb1", 7}});
+    const std::vector<Volume> volumes =
+        detect_volumes(fs, {{"internal", "Internal", "/user", VolumeKind::internal},
+                            {"ext0", "Extended", "/mnt/ext0", VolumeKind::extended},
+                            {"ext1", "Extended 2", "/mnt/ext1", VolumeKind::extended},
+                            {"usb0", "USB 1", "/mnt/usb0", VolumeKind::usb},
+                            {"usb1", "USB 2", "/mnt/usb1", VolumeKind::usb}});
+    ASSERT_EQ(volumes.size(), 3u);
+    EXPECT_EQ(volumes[0].spec.key, "internal");
+    EXPECT_EQ(volumes[1].spec.key, "ext1");
+    EXPECT_EQ(volumes[2].spec.key, "usb0");
+}
+
+// Folders with files in them, kept in memory.
+class MemoryFileSystem final : public FileSystem
+{
+  public:
+    void folder(const std::string &parent, const std::string &name)
+    {
+        Entry e;
+        e.name = name;
+        e.type = EntryType::directory;
+        dirs_[parent].push_back(e);
+    }
+    void file(const std::string &path, const std::string &text)
+    {
+        files_[path] = text;
+    }
+    bool list(const std::string &path, std::vector<Entry> *out, int *error) const override
+    {
+        const auto it = dirs_.find(path);
+        if (it == dirs_.end())
+        {
+            *error = ENOENT;
+            return false;
+        }
+        *out = it->second;
+        return true;
+    }
+    bool stat(const std::string &, Entry *) const override
+    {
+        return false;
+    }
+    bool space(const std::string &, SpaceInfo *) const override
+    {
+        return false;
+    }
+    bool read_file(const std::string &path, std::string *out, std::size_t) const override
+    {
+        const auto it = files_.find(path);
+        if (it == files_.end())
+            return false;
+        *out = it->second;
+        return true;
+    }
+
+  private:
+    std::map<std::string, std::vector<Entry>> dirs_;
+    std::map<std::string, std::string> files_;
+};
+
+TEST(PlaydenTitles, OwnerFilesMapInstallsToTitles)
+{
+    MemoryFileSystem fs;
+    fs.folder("/hb", "FAKE78024");
+    fs.file("/hb/FAKE78024/.playden-title-owner",
+            "schema=1\nkind=title\ninstall_id=steam-2868840\ntitle_id=FAKE78024\n");
+    fs.folder("/hb", "FAKE78001");
+    fs.file("/hb/FAKE78001/.playden-title-owner",
+            "install_id=gog-1207658695\r\ntitle_id=FAKE78001\r\n");
+    // A copied owner file names another title: not believed.
+    fs.folder("/hb", "FAKE78002");
+    fs.file("/hb/FAKE78002/.playden-title-owner", "install_id=steam-1\ntitle_id=FAKE78024\n");
+    fs.folder("/hb", "PPSA93475"); // a title without the file
+    fs.folder("/hb", "notes");     // not a title folder
+    fs.file("/hb/notes/.playden-title-owner", "install_id=steam-2\ntitle_id=notes\n");
+
+    const auto titles = read_playden_titles(fs, "/hb");
+    ASSERT_EQ(titles.size(), 2u);
+    EXPECT_EQ(titles.at("steam-2868840"), "FAKE78024");
+    EXPECT_EQ(titles.at("gog-1207658695"), "FAKE78001");
+    EXPECT_TRUE(read_playden_titles(fs, "/missing").empty());
+}
+
+TEST(PlaydenTitles, InstallIdOnlyInsidePlaydenGameFolders)
+{
+    EXPECT_EQ(playden_install_id("/mnt/usb0/playden/games", "2610"), "steam-2610");
+    EXPECT_EQ(playden_install_id("/data/playden-games", "gog-1207658695"), "gog-1207658695");
+    EXPECT_EQ(playden_install_id("/user/data/playden-games", "220"), "steam-220");
+    EXPECT_EQ(playden_install_id("/data/playden/games", "steam-440"), "steam-440");
+    EXPECT_EQ(playden_install_id("/mnt/ext1/playden/games", "local-8a8066ef"), "local-8a8066ef");
+    EXPECT_EQ(playden_install_id("/mnt/usb0/playden/games", ".playden-saves"), "");
+    EXPECT_EQ(playden_install_id("/mnt/usb0/playden/import", "2610"), "");
+    EXPECT_EQ(playden_install_id("/mnt/usb0/games", "2610"), "");
+    EXPECT_EQ(playden_install_id("/mnt/usb0/playden/games/2610", "data"), "");
 }
 
 } // namespace

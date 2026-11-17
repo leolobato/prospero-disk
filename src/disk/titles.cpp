@@ -27,6 +27,70 @@ bool is_title_id(std::string_view name)
     return true;
 }
 
+std::string_view title_id_of_folder(std::string_view name)
+{
+    if (name.size() < 9 || !is_title_id(name.substr(0, 9)))
+        return {};
+    if (name.size() == 9 || name[9] == '-' || name[9] == '_' || name[9] == '.')
+        return name.substr(0, 9);
+    return {};
+}
+
+std::map<std::string, std::string> read_playden_titles(const FileSystem &fs,
+                                                       const std::string &homebrew_root)
+{
+    std::map<std::string, std::string> out;
+    std::vector<Entry> entries;
+    int error = 0;
+    if (!fs.list(homebrew_root, &entries, &error))
+        return out;
+    for (const Entry &e : entries)
+    {
+        if (e.type != EntryType::directory || !is_title_id(e.name))
+            continue;
+        std::string text;
+        if (!fs.read_file(homebrew_root + "/" + e.name + "/.playden-title-owner", &text, 4096))
+            continue;
+        std::string install;
+        std::string title;
+        std::size_t at = 0;
+        while (at < text.size())
+        {
+            std::size_t end = text.find('\n', at);
+            if (end == std::string::npos)
+                end = text.size();
+            const std::string_view line(text.data() + at, end - at);
+            if (line.starts_with("install_id="))
+                install = std::string(line.substr(11));
+            else if (line.starts_with("title_id="))
+                title = std::string(line.substr(9));
+            at = end + 1;
+        }
+        while (!install.empty() && (install.back() == '\r' || install.back() == ' '))
+            install.pop_back();
+        while (!title.empty() && (title.back() == '\r' || title.back() == ' '))
+            title.pop_back();
+        // The folder must be the title it names: a copied file is not believed.
+        if (!install.empty() && title == e.name)
+            out[install] = title;
+    }
+    return out;
+}
+
+std::string playden_install_id(std::string_view parent_path, std::string_view folder)
+{
+    if (!parent_path.ends_with("/playden/games") && !parent_path.ends_with("/playden-games"))
+        return {};
+    if (folder.empty())
+        return {};
+    if (folder.starts_with("steam-") || folder.starts_with("gog-") || folder.starts_with("local-"))
+        return std::string(folder);
+    for (const char c : folder)
+        if (c < '0' || c > '9')
+            return {};
+    return "steam-" + std::string(folder);
+}
+
 namespace
 {
 

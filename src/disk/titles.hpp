@@ -9,6 +9,7 @@
 
 #include <condition_variable>
 #include <deque>
+#include <map>
 #include <mutex>
 #include <string>
 #include <string_view>
@@ -20,6 +21,25 @@ namespace hui::disk
 
 // Four capitals and five digits: "PPSA01467", "CUSA00001".
 bool is_title_id(std::string_view name);
+
+// The title a folder is named after: the whole name when it is a title ID, or
+// its first nine characters when a title ID is followed by '-', '_' or '.'
+// ("PPSA28416-app0", "PPSA28416-patch0", "CUSA00001_00"); "" otherwise.
+std::string_view title_id_of_folder(std::string_view name);
+
+// Playden (a launcher that installs PC games) registers each game as its own
+// PS5 title and writes <homebrew root>/<TITLE_ID>/.playden-title-owner,
+// "key=value" lines with install_id (steam-2610, gog-1207658695,
+// local-<uuid>) and title_id. Returns install_id -> title_id for every such
+// folder; empty when there are none or the folder cannot be read.
+std::map<std::string, std::string> read_playden_titles(const FileSystem &fs,
+                                                       const std::string &homebrew_root);
+
+// The Playden install a folder holds, for folders directly inside Playden's
+// game folders ("<volume>/playden/games", "/data/playden/games" for bottles,
+// "<volume>/playden-games"): "2610" -> "steam-2610"; "steam-...", "gog-..."
+// and "local-..." names are kept. "" for any other folder.
+std::string playden_install_id(std::string_view parent_path, std::string_view folder);
 
 // The title's name in its default language from a param.json, or "".
 std::string title_name_from_param_json(std::string_view json);
