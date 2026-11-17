@@ -3,8 +3,35 @@
 Source artwork for what the PS5 home screen shows, and for the ProsperoStore
 listing (milestone M6 in [docs/PRD.md](../docs/PRD.md)). Put the source files
 here; the converted files the build packages live in [`sce_sys/`](../sce_sys)
-and are made with `tools/prepare-assets.sh`. `sce_sys/` still holds the kit's
-placeholder art.
+and are made with `tools/prepare-assets.sh`. The icon is the selected Deep
+Colour Directory D; the other presentation assets still use the kit's placeholders.
+
+## Selected icon
+
+`icon.blend` is the production scene. `icon-master.png` is the 4096 × 4096,
+16-bit RGB master; `icon.png` is the 1024 × 1024 source, and
+`../sce_sys/icon0.png` is the 512 × 512 console export. All are opaque, with
+the mark inside the central 80%. The console appearance has not been verified.
+
+Render with Blender, using up to 1024 Cycles samples, a 0.005 adaptive noise
+threshold, and denoising:
+
+```sh
+blender --background --python art/render-icon.py
+```
+
+Append `-- --metal` to use an Apple GPU. The first run compiles Cycles shaders;
+later renders can reuse the cached compilation.
+
+The script loads the selected scene from `options/09-deep-color.blend`.
+On macOS, where the Windows conversion helper is unavailable, export the icon
+with ImageMagick (Lanczos resizing in linear RGB):
+
+```sh
+magick art/icon-master.png -colorspace RGB -filter Lanczos -resize 1024x1024 -colorspace sRGB -depth 8 -alpha off PNG24:art/icon.png
+magick art/icon-master.png -colorspace RGB -filter Lanczos -resize 512x512 -colorspace sRGB -depth 8 -alpha off PNG24:sce_sys/icon0.png
+tools/validate-assets.sh
+```
 
 ## What is needed
 
