@@ -1,7 +1,13 @@
-# ps5-homebrew-ui
+# Prospero Disk
 
-The instructions for coding agents are in [AGENTS.md](AGENTS.md); they apply
-to Claude Code as they do to every other agent, and are imported below.
+A disk-usage explorer for jailbroken PS5s (title `PPSA93475`), forked from
+ps5-homebrew-ui (remote `kit`). What to build is in
+[docs/PRD.md](docs/PRD.md); milestones are in its section 11.
+
+The kit's instructions for coding agents are in [AGENTS.md](AGENTS.md); they
+apply here and are imported below. Its gallery designs were removed: the app's
+screens live in `src/concepts/disk*.cpp`, and the Component Library
+(`components`) stays as a reference until milestone M3.
 
 The one habit that matters most here: **preview on the PC and look at the
 pictures before calling any UI change done.**
