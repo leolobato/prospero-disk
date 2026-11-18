@@ -146,16 +146,19 @@ int MusicPlayer::init(Mixer &mixer, const std::string &directory, std::uint64_t 
 {
     mixer_ = &mixer;
     directory_ = directory;
-    mixer.attach_stream(0, &ring_);
-    mixer.set_stream_gain(0, kBaseGain, 0.0f);
-    mixer.set_stream_gain(1, 0.0f, 0.0f);
-
     for (const std::string &name : save::list_files(directory))
     {
         if (name.size() > 4 && name.compare(name.size() - 4, 4, ".ogg") == 0 &&
             playlist_.size() < kMaxSongs)
             playlist_.push_back(name.substr(0, name.size() - 4));
     }
+    // No songs, no stream: an attached stream that never fills counts as an
+    // underrun on every audio grain.
+    if (playlist_.empty())
+        return 0;
+    mixer.attach_stream(0, &ring_);
+    mixer.set_stream_gain(0, kBaseGain, 0.0f);
+    mixer.set_stream_gain(1, 0.0f, 0.0f);
     // A fresh order every launch: sort first so the seed alone decides it.
     std::sort(playlist_.begin(), playlist_.end());
     std::uint64_t state = seed;

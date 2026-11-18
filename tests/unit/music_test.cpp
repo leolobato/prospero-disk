@@ -166,4 +166,9 @@ TEST(MusicPlayer, SilentWithoutSongs)
     EXPECT_EQ(player.init(mixer, "/nonexistent", 3), 0);
     player.pump(0.016f);
     EXPECT_EQ(player.current(), "");
+    // Nothing to play is not an underrun: the log must not count one per grain.
+    std::vector<std::int16_t> out(512 * 2);
+    for (int i = 0; i < 4; ++i)
+        mixer.render(out.data(), 512);
+    EXPECT_EQ(mixer.stream_underruns(), 0u);
 }
