@@ -233,9 +233,7 @@ Japanese, Cyrillic, accented Latin and other scripts. Adopt **ProsperoEden's
 text engine**, the way ProsperoRadio did (`ADOPTING.md`, "What the first
 adoption taught"):
 
-- Source: the Gitea mirror `gitea:leolobato/ProsperoEden.git`
-  (<http://10.0.1.9:3000/leolobato/ProsperoEden>; upstream
-  `github.com/blackbearreloaded/ProsperoEden`), directory
+- Source: `github.com/blackbearreloaded/ProsperoEden`, directory
   `headless/prosperoeden/pe/gfx/`. Take `font.*`, `font_format.hpp`,
   `system_fonts.*`, `harfbuzz.cpp` and `bidi.*`, and replace the kit's
   `gfx/font.*` with them. GPL-3.0-or-later, the same as the kit. The code
