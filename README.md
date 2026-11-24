@@ -16,8 +16,10 @@ deletes anything.
    `/data/homebrew/PPSA93475`.
 3. Wait about ten seconds for the console to register the title. Prospero Disk
    then appears on the home screen.
-4. Before you launch it, start a resident Lapy service or the ELF loader on
-   port 9021 (see [Access](#access)).
+
+It needs [elfldr](https://github.com/ps5-payload-dev/elfldr), the ELF loader
+on port 9021, running when you launch it. Most jailbreak loaders start it for
+you (see [Access](#access)).
 
 Tested on firmware 13.60.
 
@@ -45,10 +47,15 @@ To update, replace the `PPSA93475` folder with the one from the new release.
 
 ## Access
 
-When it starts, the app asks for full file-system access through Lapy, so a
-resident Lapy service or the ELF loader on port 9021 must be running. Without
-it, the app still opens: it shows a "Limited access" banner and lists only the
-volumes it can read. Its cache is then kept in the app's own storage.
+A PS5 app normally sees only its own sandbox. To read the whole console, Prospero
+Disk ships a small root helper, [Lapy](https://github.com/mpereiraesaa/PS5-Lapy-JB-Daemon)
+(`lapy.elf` in the app folder). When the app starts, it sends the helper to the
+ELF loader on port 9021, and the helper grants it read access to the file
+system. This takes a few seconds. You don't install or start Lapy yourself.
+
+If nothing answers on port 9021, the app still opens: it shows a "Limited
+access" banner, lists only the volumes it can read and keeps its cache in its
+own storage. Load the ELF loader and open the app again for full access.
 
 ## Known limits
 
