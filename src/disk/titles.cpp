@@ -345,8 +345,20 @@ std::string title_name_from_param_json(std::string_view json)
     return string_member(root, "titleName");
 }
 
-std::string title_name_from_app_db(const std::string &path, std::string_view id)
+namespace
 {
+
+std::string column_text(sqlite3_stmt *query, int column)
+{
+    const unsigned char *text = sqlite3_column_text(query, column);
+    return text != nullptr ? std::string(reinterpret_cast<const char *>(text)) : std::string();
+}
+
+} // namespace
+
+AppDbTitle title_from_app_db(const std::string &path, std::string_view id)
+{
+    AppDbTitle found;
     sqlite3 *db = nullptr;
     const std::string uri = "file:" + path + "?immutable=1";
     if (sqlite3_open_v2(uri.c_str(), &db, sqlite::kOpenReadOnly | sqlite::kOpenUri, nullptr) !=
@@ -355,6 +367,49 @@ std::string title_name_from_app_db(const std::string &path, std::string_view id)
         sqlite3_close(db);
         return {};
     }
+    const std::string key(id);
+
+    // PS5 layout. A database without the icon column still names the title;
+    // one without the table falls through to the older layout below.
+    sqlite3_stmt *content = nullptr;
+    const bool with_icon =
+        sqlite3_prepare_v2(db,
+                           "SELECT titleName, icon0Info FROM tbl_contentinfo WHERE titleId = ?1 "
+                           "LIMIT 1",
+                           -1, &content, nullptr) == sqlite::kOk;
+    if (!with_icon)
+    {
+        sqlite3_finalize(content);
+        content = nullptr;
+        if (sqlite3_prepare_v2(db,
+                               "SELECT titleName FROM tbl_contentinfo WHERE titleId = ?1 LIMIT 1",
+                               -1, &content, nullptr) != sqlite::kOk)
+        {
+            sqlite3_finalize(content);
+            content = nullptr;
+        }
+    }
+    if (content != nullptr &&
+        sqlite3_bind_text(content, 1, key.c_str(), static_cast<int>(key.size()), nullptr) ==
+            sqlite::kOk &&
+        sqlite3_step(content) == sqlite::kRow)
+    {
+        found.name = column_text(content, 0);
+        if (with_icon)
+            found.icon_path = column_text(content, 1);
+        // Only a file path is of use: drop the cache-busting "?ts=..." and
+        // anything that is not absolute (a URL, say).
+        found.icon_path = found.icon_path.substr(0, found.icon_path.find('?'));
+        if (found.icon_path.empty() || found.icon_path.front() != '/')
+            found.icon_path.clear();
+    }
+    sqlite3_finalize(content);
+    if (!found.name.empty())
+    {
+        sqlite3_close(db);
+        return found;
+    }
+
     std::vector<std::string> tables;
     sqlite3_stmt *list = nullptr;
     if (sqlite3_prepare_v2(db,
@@ -366,8 +421,6 @@ std::string title_name_from_app_db(const std::string &path, std::string_view id)
                 tables.emplace_back(reinterpret_cast<const char *>(name));
     sqlite3_finalize(list);
 
-    std::string found;
-    const std::string key(id);
     for (const std::string &table : tables)
     {
         // The name comes from sqlite_master; quote it as an identifier anyway.
@@ -381,14 +434,18 @@ std::string title_name_from_app_db(const std::string &path, std::string_view id)
             sqlite3_bind_text(query, 1, key.c_str(), static_cast<int>(key.size()), nullptr) ==
                 sqlite::kOk &&
             sqlite3_step(query) == sqlite::kRow)
-            if (const unsigned char *name = sqlite3_column_text(query, 0))
-                found = reinterpret_cast<const char *>(name);
+            found.name = column_text(query, 0);
         sqlite3_finalize(query);
-        if (!found.empty())
+        if (!found.name.empty())
             break;
     }
     sqlite3_close(db);
     return found;
+}
+
+std::string title_name_from_app_db(const std::string &path, std::string_view id)
+{
+    return title_from_app_db(path, id).name;
 }
 
 TitleLoader::TitleLoader(const FileSystem &fs, std::vector<std::string> roots, int icon_size,
@@ -462,20 +519,30 @@ TitleInfo TitleLoader::load(const std::string &id) const
 {
     TitleInfo info;
     info.id = id;
+    // The name and the icon are looked for separately: a folder may give one
+    // and not the other.
     for (const std::string &root : roots_)
     {
+        const std::string folder = root + "/" + id;
         std::string bytes;
-        if (!fs_.read_file(root + "/" + id + "/param.json", &bytes, 1u << 20))
-            continue;
-        info.name = title_name_from_param_json(bytes);
+        if (info.name.empty() && fs_.read_file(folder + "/param.json", &bytes, 1u << 20))
+            info.name = title_name_from_param_json(bytes);
         std::string icon;
-        if (fs_.read_file(root + "/" + id + "/icon0.png", &icon, 8u << 20))
+        if (info.icon.rgba.empty() && fs_.read_file(folder + "/icon0.png", &icon, 8u << 20))
             decode_png(icon, icon_size_, &info.icon);
-        if (!info.name.empty())
+        if (!info.name.empty() && !info.icon.rgba.empty())
             break;
     }
-    if (info.name.empty() && !app_db_.empty())
-        info.name = title_name_from_app_db(app_db_, id);
+    if ((info.name.empty() || info.icon.rgba.empty()) && !app_db_.empty())
+    {
+        const AppDbTitle db = title_from_app_db(app_db_, id);
+        if (info.name.empty())
+            info.name = db.name;
+        std::string icon;
+        if (info.icon.rgba.empty() && !db.icon_path.empty() &&
+            fs_.read_file(db.icon_path, &icon, 8u << 20))
+            decode_png(icon, icon_size_, &info.icon);
+    }
     return info;
 }
 

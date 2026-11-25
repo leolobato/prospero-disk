@@ -446,6 +446,79 @@ TEST(DiskTitles, AppDbNamesWhatParamJsonDoesNot)
     EXPECT_EQ(std::system(("rm -rf '" + std::string(dir) + "'").c_str()), 0);
 }
 
+// app.db as PS5 firmware 13.60 lays it out: no tbl_appbrowse_* tables, the
+// name and an icon path in tbl_contentinfo. Retail games' appmeta folders are
+// 0700, so for them this is the only source the app can read.
+TEST(DiskTitles, AppDbContentInfoNamesAndFindsTheIcon)
+{
+    char dir[] = "/tmp/pd-appdb5-XXXXXX";
+    ASSERT_NE(mkdtemp(dir), nullptr);
+    const std::string root = dir;
+    const std::string path = root + "/app.db";
+    const std::string icon_dir = root + "/catalog/PPSA77777";
+    ASSERT_EQ(std::system(("mkdir -p '" + icon_dir + "'").c_str()), 0);
+    std::vector<std::uint8_t> rgba(8 * 8 * 4, 255);
+    const std::string png = encode_png(8, 8, rgba.data());
+    FILE *file = std::fopen((icon_dir + "/icon0.png").c_str(), "wb");
+    ASSERT_NE(file, nullptr);
+    ASSERT_EQ(std::fwrite(png.data(), 1, png.size(), file), png.size());
+    std::fclose(file);
+
+    sqlite3 *db = nullptr;
+    ASSERT_EQ(sqlite3_open_v2(path.c_str(), &db,
+                              hui::disk::sqlite::kOpenReadWrite | hui::disk::sqlite::kOpenCreate,
+                              nullptr),
+              hui::disk::sqlite::kOk);
+    const std::string sql =
+        "CREATE TABLE tbl_contentinfo (titleId TEXT, titleName TEXT, icon0Info TEXT);"
+        "INSERT INTO tbl_contentinfo VALUES ('PPSA77777', 'Lantern Bay', '" +
+        icon_dir +
+        "/icon0.png?ts=1791699632');"
+        "INSERT INTO tbl_contentinfo VALUES ('CUSA77777', 'Old Harbour', "
+        "'http://example.invalid/icon0.png');"
+        "INSERT INTO tbl_contentinfo VALUES ('PPSA66666', 'No Icon', NULL);";
+    ASSERT_EQ(sqlite3_exec(db, sql.c_str(), nullptr, nullptr, nullptr), hui::disk::sqlite::kOk);
+    sqlite3_close(db);
+
+    const AppDbTitle lantern = title_from_app_db(path, "PPSA77777");
+    EXPECT_EQ(lantern.name, "Lantern Bay");
+    EXPECT_EQ(lantern.icon_path, icon_dir + "/icon0.png");
+    const AppDbTitle harbour = title_from_app_db(path, "CUSA77777");
+    EXPECT_EQ(harbour.name, "Old Harbour");
+    EXPECT_EQ(harbour.icon_path, ""); // not a file path
+    EXPECT_EQ(title_from_app_db(path, "PPSA66666").icon_path, "");
+    EXPECT_EQ(title_name_from_app_db(path, "PPSA00000"), "");
+
+    // A layout without the icon column still gives the name.
+    const std::string bare = root + "/bare.db";
+    ASSERT_EQ(sqlite3_open_v2(bare.c_str(), &db,
+                              hui::disk::sqlite::kOpenReadWrite | hui::disk::sqlite::kOpenCreate,
+                              nullptr),
+              hui::disk::sqlite::kOk);
+    ASSERT_EQ(sqlite3_exec(db,
+                           "CREATE TABLE tbl_contentinfo (titleId TEXT, titleName TEXT);"
+                           "INSERT INTO tbl_contentinfo VALUES ('PPSA77777', 'Lantern Bay');",
+                           nullptr, nullptr, nullptr),
+              hui::disk::sqlite::kOk);
+    sqlite3_close(db);
+    EXPECT_EQ(title_from_app_db(bare, "PPSA77777").name, "Lantern Bay");
+    EXPECT_EQ(title_from_app_db(bare, "PPSA77777").icon_path, "");
+
+    // No appmeta folder can be opened: the name and the icon come from app.db.
+    const auto fs = make_posix_filesystem(false);
+    TitleLoader loader(*fs, {root + "/locked-appmeta"}, 4, path);
+    loader.request("PPSA77777");
+    loader.request("CUSA77777");
+    loader.wait_idle();
+    const std::vector<TitleInfo> done = loader.poll();
+    ASSERT_EQ(done.size(), 2u);
+    EXPECT_EQ(done[0].name, "Lantern Bay");
+    EXPECT_EQ(done[0].icon.width, 4);
+    EXPECT_EQ(done[1].name, "Old Harbour");
+    EXPECT_TRUE(done[1].icon.rgba.empty());
+    EXPECT_EQ(std::system(("rm -rf '" + root + "'").c_str()), 0);
+}
+
 TEST(DiskPng, StoredPngDecodesAndShrinks)
 {
     std::vector<std::uint8_t> rgba(8 * 8 * 4);

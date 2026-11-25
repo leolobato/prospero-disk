@@ -44,9 +44,20 @@ std::string playden_install_id(std::string_view parent_path, std::string_view fo
 // The title's name in its default language from a param.json, or "".
 std::string title_name_from_param_json(std::string_view json);
 
-// The fallback (PRD 5.4): titleName for the ID in any tbl_appbrowse_* table
-// of the console's app.db, opened read-only and immutable (no locks, no
-// journal); "" when there is none.
+struct AppDbTitle
+{
+    std::string name;      // "" when app.db does not know the title
+    std::string icon_path; // a readable icon0.png the console keeps, or ""
+};
+
+// The fallback (PRD 5.4) for titles whose /user/appmeta/<id> folder the app
+// cannot open: retail games' folders are 0700 and the app acts as its own
+// user after the grant. Reads the console's app.db, opened read-only and
+// immutable (no locks, no journal). On PS5 firmware (seen on 13.60) the row is
+// in tbl_contentinfo, whose icon0Info names a copy of the icon under
+// /user/catalog_downloader that is readable ("...icon0.png?ts=..."; the query
+// part is dropped). Older layouts keep the name in tbl_appbrowse_* tables.
+AppDbTitle title_from_app_db(const std::string &path, std::string_view id);
 std::string title_name_from_app_db(const std::string &path, std::string_view id);
 
 struct TitleInfo
