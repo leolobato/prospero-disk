@@ -2,8 +2,8 @@
 
 Shows what is using the storage on a jailbroken PS5. It scans a drive quickly
 and draws the result as an interactive sunburst next to a sorted list, all
-driven by the controller. It only reads: it shows sizes and never changes or
-deletes anything.
+driven by the controller. You can collect folders and files as you explore and
+delete them together, after two confirmations.
 
 ![The Explore screen: a sunburst of the internal drive next to its folders sorted by size](docs/images/explore.png)
 
@@ -31,9 +31,10 @@ To update, replace the `PPSA93475` folder with the one from the new release.
 
 | Screen | Buttons |
 | --- | --- |
-| Volumes | Cross opens the last scan (or starts one), Square rescans, Options shows About |
+| Volumes | Cross opens the last scan (or starts one), Square rescans, Options shows About. Below the last card, the collection bar: Cross opens the review |
 | Scanning | Circle cancels. What was found so far opens as a partial scan |
-| Explore | The D-pad moves through the list, the right stick aims at a segment, Cross opens a folder, Circle goes up, Triangle sorts by size or name, Square rescans, Options opens the menu (Rescan, Scan details, About), L1/R1 switch volume |
+| Explore | The D-pad moves through the list, the right stick aims at a segment, Cross opens a folder, Circle goes up, Triangle sorts by size or name, Square rescans, R2 collects or puts back the focused row, Options opens the menu (Rescan, Scan details, About), L1/R1 switch volume |
+| Anywhere | R3 opens the review of what is collected |
 
 - **System & hidden**: at the top of a volume, this entry is the used space
   the scan cannot see, so the numbers add up to the drive's used space.
@@ -44,6 +45,30 @@ To update, replace the `PPSA93475` folder with the one from the new release.
   drawn with the console's own fonts.
 - **Cache**: scans are saved in `/data/prospero-disk/cache`, so opening a
   volume again shows the last scan without scanning again. Square rescans it.
+
+### Collect and delete
+
+R2 in Explore collects the focused folder or file for deletion; a bar at the
+bottom left then shows the total on every screen. R3 opens the review: Cross
+puts an item back, Triangle puts everything back, and **Delete...** at the
+bottom asks twice: a summary first, then Cross held for two seconds. While it
+deletes, the app shows the progress and Circle stops after the current item.
+The result says how much space each drive got back and lists anything that
+could not be deleted, which stays collected. The collection is forgotten when
+the app closes.
+
+- Be sure about what you delete: deleting files can have unintended
+  consequences.
+- Some things can't be collected: a whole drive, "System & hidden", the
+  console's system folders (`/system*`, `/preinst`, `/user/appmeta`, the
+  `app.db` folder) and Prospero Disk's own files.
+- A PS5 game (`/user/app/PPSA...`) is **uninstalled through the console**, as
+  the home screen would, never deleted by hand; its patches and add-ons go with
+  it. A Playden game is uninstalled the same way: collecting its title removes
+  the title, collecting its game data removes the data and the title. PS4
+  games are left to the home screen for now.
+- Uninstalling sends a small helper, `title-remover.elf`, to the ELF loader on
+  port 9021, like Lapy.
 
 ## Access
 
@@ -60,7 +85,9 @@ own storage. Load the ELF loader and open the app again for full access.
 ## Known limits
 
 Not yet checked on a console: scanning USB drives, the console fonts for
-non-Latin scripts, and whether the "System & hidden" total adds up exactly.
+non-Latin scripts, whether the "System & hidden" total adds up exactly,
+deleting from the app's own process with other threads running, and
+uninstalling a game from it.
 Please open an issue if you try any of these.
 
 ## Building

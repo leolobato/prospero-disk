@@ -1794,8 +1794,8 @@ class Disk final : public app::Concept
     {
         std::string body =
             "Shows where your storage went: scan a volume, then explore it as rings and a "
-            "sorted list.\nRead-only: it never changes your files. It writes only its own scan "
-            "cache.\nGPL-3.0-or-later, built on ps5-homebrew-ui.";
+            "sorted list. Collect what you don't need and delete it together, after two "
+            "confirmations.\nGPL-3.0-or-later, built on ps5-homebrew-ui.";
         if (degraded())
             body += "\nElevation: " + env_.elevation.diagnostic;
         if (!last_error_.empty())

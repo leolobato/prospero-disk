@@ -16,7 +16,8 @@ draws it as an interactive sunburst (concentric rings, one ring per folder depth
 beside a sorted list. It is like DaisyDisk on macOS, driven by a controller and
 built with the look of the `ps5-homebrew-ui` kit.
 
-Version 1 is **read-only**. It shows sizes and never changes the user's data.
+Version 1 shows sizes. Collect and delete (§5.5, added after 1.0.2) lets the
+user mark what they don't need and delete it, after two confirmations.
 
 ## 2. Goals
 
@@ -31,7 +32,7 @@ Version 1 is **read-only**. It shows sizes and never changes the user's data.
 
 ## 3. Non-goals (v1)
 
-- Deleting, moving or changing anything (no DaisyDisk "collector").
+- Moving or renaming anything.
 - Comparing two scans ("what grew?").
 - Finding duplicate files.
 - A treemap view (a possible later alternative visualization).
@@ -124,6 +125,22 @@ similar locations.
 - Icons load off the frame thread. A placeholder shows first and fades to the
   icon.
 
+### 5.5 Collect and delete
+
+The plan and the owner's decisions: [docs/plans/collect-delete.md](plans/collect-delete.md).
+
+- R2 in Explore collects the focused row or puts it back; R3 opens the review
+  anywhere. A bar at the bottom left shows the total and the size per drive.
+- The review lists the items by drive, largest first. Cross puts one back,
+  Triangle puts all back, Circle closes, **Delete...** asks twice: a summary
+  (focus on Cancel), then Cross held for two seconds.
+- Deleting holds the app: progress in bytes and the current path; Circle stops
+  after the current item. The result shows the space freed per drive (statfs)
+  and the items that failed, which stay collected. The trees are updated in
+  place and the caches saved.
+- Installed PS5 games and Playden's games are uninstalled through the system
+  (a payload sent to the ELF loader), never deleted by hand.
+
 ## 6. Functional requirements
 
 | ID | Requirement |
@@ -138,8 +155,12 @@ similar locations.
 | F8 | Resolve title IDs to names and icons (§5.4). |
 | F9 | Cache each completed scan per volume. Load it at launch and label it with its age. |
 | F10 | Cancel a scan at any time. The UI stays responsive (60 fps target) during a scan. |
-| F11 | Read-only: the only path the app writes is its own cache and settings directory. |
+| F11 | The app writes only its own cache and settings directory, and deletes only what the user collected and confirmed twice (§5.5). |
 | F12 | Exit through `sceSystemServiceLoadExec("exit", NULL)`, never `exit()`. |
+| F13 | Never collectable: volume roots, "System & hidden", roll-ups, `/system*`, `/preinst`, `/user/appmeta`, the `app.db` folder, Prospero Disk's own folders, and folders that contain any of them or installed games. |
+| F14 | Deletion is bottom-up, never follows a link or crosses a mount point, `lstat`s each entry again before removing it, and goes on past errors, logging each with its errno. |
+| F15 | An installed game is uninstalled through the system's app-install API, never by deleting its folders. |
+| F16 | The collection lasts for the session only. |
 
 ## 7. Technical design (outline)
 

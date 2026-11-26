@@ -47,8 +47,8 @@ std::string cache_path(const std::string &dir, std::string_view volume_key);
 bool read_cache_info(const std::string &path, CacheInfo *out);
 // Reads and decodes a whole cache file.
 bool load_cache(const std::string &path, CachedScan *out);
-// Creates dir (and its parents) and writes the file atomically. The only
-// place the app writes (PRD F11). Returns an error message or "".
+// Creates dir (and its parents) and writes the file atomically (PRD F11).
+// Returns an error message or "".
 std::string save_cache(const std::string &dir, const CacheInfo &info, const Tree &tree);
 
 } // namespace hui::disk

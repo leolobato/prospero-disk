@@ -379,7 +379,7 @@ int main()
     const std::string assets = paths.app + "/assets";
 
     // What the elevation made readable (docs/PRD.md 10.1-3): to the log, and
-    // beside the cache for FTP. The cache folder is the app's own (F11).
+    // beside the cache for FTP, in the app's own folder (PRD F11).
     {
         const std::string report = ps5::probe_storage(
             elevation.granted,
