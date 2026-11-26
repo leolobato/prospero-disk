@@ -6,6 +6,8 @@
 //   Volumes   a card per readable volume, its statfs bar and cache age
 //   Scanning  live counters and a sunburst that grows as folders finish
 //   Explore   the sunburst of the current folder beside its sorted list
+//   Deleting  the app held while the collection is deleted (collect and
+//             delete: docs/plans/collect-delete.md)
 // The scanner and the cache live in src/disk; this file only drives them and
 // never waits for them: scans run on worker threads, cache files are read
 // and written on helper threads, title names and icons on the TitleLoader's.
@@ -14,23 +16,33 @@
 
 #include "core/tween.hpp"
 #include "disk/cache.hpp"
+#include "disk/collection.hpp"
+#include "disk/deleter.hpp"
 #include "disk/format.hpp"
 #include "disk/scanner.hpp"
 #include "disk/sunburst.hpp"
 #include "disk/titles.hpp"
 #include "disk/volumes.hpp"
+#include "ui/components/button.hpp"
 #include "ui/components/dialog.hpp"
+#include "ui/components/hold_button.hpp"
 #include "ui/components/list.hpp"
 #include "ui/components/menu.hpp"
+#include "ui/components/sheet.hpp"
+#include "ui/components/toast.hpp"
 #include "ui/glyphs.hpp"
 #include "ui/motion.hpp"
 #include "ui/theme.hpp"
 
 #include <algorithm>
 #include <atomic>
+#include <cctype>
 #include <cmath>
+#include <cstring>
 #include <ctime>
+#include <deque>
 #include <map>
+#include <set>
 #include <thread>
 
 namespace hui::concepts
@@ -59,6 +71,10 @@ constexpr float kSliceGap = 0.005f; // radians: 1 to 2 px from the inner to the 
 const Color kHiddenA = Color::rgb(0x343a52);
 const Color kHiddenB = Color::rgb(0x4a5170);
 const Color kCore = Color::rgb(0x151a30, 0.94f);
+// Amber means "collected"; red is kept for the delete button alone.
+const Color kCollect = Color::rgb(0xf2a93b);
+const Color kCollectDark = Color::rgb(0x8a5f22);
+const Color kCollectInk = Color::rgb(0xf6cf93);
 
 // One hue per first-ring branch; lightness falls with depth.
 constexpr std::uint32_t kBranchColours[] = {0x4f8cff, 0xff6b6b, 0xffb84d, 0x3fd18b,
@@ -121,6 +137,47 @@ constexpr app::TourStep kTour[] = {
     {0.3f, action_bit(Action::confirm)}, // OK
     {0.6f, action_bit(Action::back)},    // to Volumes
     {0.8f, 0, Direction::none, "volumes"},
+    // Collect and delete, on the fixture (a tour on the console deletes nothing).
+    {0.3f, action_bit(Action::confirm)},   // Internal again, from memory
+    {0.9f, action_bit(Action::jump_next)}, // R2 on "app": it holds games
+    {0.5f, 0, Direction::none, "refused"},
+    {0.12f, 0, Direction::down},
+    {0.12f, 0, Direction::down},
+    {0.12f, 0, Direction::down},
+    {0.12f, 0, Direction::down},
+    {0.3f, action_bit(Action::jump_next)}, // download
+    {0.2f, 0, Direction::up},
+    {0.3f, action_bit(Action::jump_next)}, // home
+    {0.12f, 0, Direction::up},
+    {0.12f, 0, Direction::up},
+    {0.12f, 0, Direction::up},
+    {0.4f, action_bit(Action::confirm)},   // into app
+    {0.9f, action_bit(Action::jump_next)}, // the largest game: uninstalled
+    {0.2f, 0, Direction::down},
+    {0.3f, action_bit(Action::jump_next)},
+    {0.8f, 0, Direction::none, "collect"},
+    {0.3f, action_bit(Action::back)},
+    {0.6f, action_bit(Action::back)}, // to Volumes
+    {0.3f, 0, Direction::down},
+    {0.4f, 0, Direction::down}, // past the last card: the bar
+    {0.6f, 0, Direction::none, "bar-volumes"},
+    {0.3f, action_bit(Action::confirm)}, // the review drawer
+    {0.9f, 0, Direction::none, "drawer"},
+    {0.12f, 0, Direction::down},
+    {0.12f, 0, Direction::down},
+    {0.12f, 0, Direction::down},
+    {0.3f, 0, Direction::down}, // past the last item: Delete
+    {0.4f, action_bit(Action::confirm)},
+    {0.7f, 0, Direction::none, "confirm"},
+    {0.2f, 0, Direction::right},
+    {0.3f, action_bit(Action::confirm)}, // Continue
+    {0.6f, action_bit(Action::confirm)}, // Cross goes down on the hold button...
+    {1.0f, 0, Direction::none, "hold", 0.0f, 0.0f, action_bit(Action::confirm)},
+    {1.15f, 0, Direction::none, nullptr, 0.0f, 0.0f, action_bit(Action::confirm)},
+    {0.45f, 0, Direction::none, "deleting"},
+    {1.4f, 0, Direction::none, "result"},
+    {0.4f, action_bit(Action::confirm)}, // OK
+    {0.8f, 0, Direction::none, "after"},
 };
 
 const ui::Theme &app_theme()
@@ -160,9 +217,21 @@ std::int64_t wall_seconds()
     return static_cast<std::int64_t>(std::time(nullptr));
 }
 
+// Where a row stands with the collection.
+enum class Mark : std::uint8_t
+{
+    none,      // R2 collects it
+    collected, // R2 puts it back
+    inside,    // a folder above it is collected
+    refused,   // it can't be collected: refusal says why
+};
+
 // A row of the list, copied out of the tree so drawing never touches it.
 struct Row
 {
+    Mark mark = Mark::none;
+    bool title = false;  // collecting it uninstalls a game
+    std::string refusal; // Mark::refused, Mark::inside: the toast's text
     dk::SegmentKind kind = dk::SegmentKind::node;
     std::uint32_t node = dk::kNoNode;
     dk::Kind node_kind = dk::Kind::directory;
@@ -186,6 +255,7 @@ struct View
     std::uint64_t centre_disk = 0;
     std::uint64_t hidden = 0;
     std::vector<dk::Segment> segments;
+    std::vector<bool> collected; // per segment: inside the collection (hatched)
     std::vector<Row> rows;
 };
 
@@ -260,6 +330,14 @@ struct SaveJob
     std::string error;
 };
 
+// A cache file waiting for the save thread: saves run one at a time, and
+// none while a deletion may raise the effective uid.
+struct PendingSave
+{
+    dk::CacheInfo info;
+    std::shared_ptr<dk::Tree> tree;
+};
+
 struct VolumeState
 {
     dk::Volume volume;
@@ -283,6 +361,16 @@ enum class Screen : std::uint8_t
     loading,
     scanning,
     explore,
+    deleting,
+};
+
+// What the dialog on screen is asking.
+enum class Ask : std::uint8_t
+{
+    none,
+    put_all_back,
+    confirm,
+    result,
 };
 
 enum MenuTag : int
@@ -332,6 +420,43 @@ class Disk final : public app::Concept
                          menu_item("About", "", kMenuAbout)});
         dialog_.style.theme = theme;
 
+        toasts_.style.theme = theme;
+        toasts_.style.anchor = ui::ToastAnchor::bottom_left;
+        toasts_.style.width = 820.0f;
+        toasts_.style.margin = kMargin;
+        toasts_.style.progress = false;
+        // Above the collection bar, which sits on the bottom edge.
+        toasts_.set_bounds({0.0f, 0.0f, gfx::kVirtualWidth, 960.0f});
+
+        drawer_.style.theme = theme;
+        drawer_.style.edge = ui::SheetEdge::bottom;
+        drawer_.style.size = 742.0f;
+        drawer_.set_bounds(
+            {kMargin, 0.0f, gfx::kVirtualWidth - 2.0f * kMargin, gfx::kVirtualHeight});
+        drawer_.set_title("Collected for deletion");
+        drawer_.content = [this](ui::Canvas &canvas, const Rect &area, float)
+        { draw_drawer(canvas, area); };
+        drawer_list_.style.theme = theme;
+        drawer_list_.style.row_height = 66.0f;
+        drawer_list_.style.header_height = 44.0f;
+        drawer_list_.style.gap = 2.0f;
+        drawer_list_.style.title_size = 25.0f;
+        drawer_list_.style.subtitle_size = 19.0f;
+        drawer_list_.style.entrance_step = 0.0f;
+        delete_button_.style.theme = theme;
+        delete_button_.style.role = ui::ButtonRole::danger;
+        delete_button_.style.size = ui::ButtonSize::large;
+        delete_button_.style.full_width = false;
+        hold_.style.theme = theme;
+        hold_.style.size = ui::ButtonSize::large;
+        // Two seconds: long enough that it can't happen by accident.
+        hold_.style.hold_seconds = 2.0f;
+        hold_.label = "Hold to delete";
+        hold_.hint = "Keep holding";
+        // Bottom right of the panel draw_hold paints (460, 340, 1000 x 400).
+        hold_.set_bounds({1460.0f - 56.0f - 420.0f, 740.0f - 44.0f - 72.0f, 420.0f, 72.0f});
+        hold_fade_.snap(0.0f);
+
         for (const dk::Volume &v : dk::detect_volumes(*env_.fs, env_.specs))
         {
             VolumeState state;
@@ -347,6 +472,9 @@ class Disk final : public app::Concept
 
     ~Disk() override
     {
+        deleter_.stop();
+        env_.fs->release();
+        deleter_.join();
         scanner_.cancel();
         scanner_.join();
         if (load_ && load_->thread.joinable())
@@ -389,8 +517,15 @@ class Disk final : public app::Concept
         poll_jobs(feedback);
         poll_titles();
 
-        if (dialog_.is_open())
-            dialog_.handle(input, feedback);
+        // While deleting the app is held: only Stop reaches it.
+        if (screen_ == Screen::deleting)
+            handle_deleting(input, feedback, dt);
+        else if (dialog_.is_open())
+            handle_dialog(input, feedback);
+        else if (hold_open_)
+            handle_hold(input, feedback);
+        else if (drawer_.is_open())
+            handle_drawer(input, feedback);
         else if (menu_.is_open())
             handle_menu(input, feedback);
         else
@@ -407,12 +542,21 @@ class Disk final : public app::Concept
             case Screen::explore:
                 handle_explore(input, feedback);
                 break;
+            case Screen::deleting:
+                break;
             }
 
         volume_list_.update(dt);
         rows_.update(dt);
         menu_.update(dt);
         dialog_.update(dt);
+        drawer_.update(dt);
+        drawer_list_.update(dt);
+        delete_button_.update(dt);
+        hold_.update(dt);
+        hold_fade_.target = hold_open_ ? 1.0f : 0.0f;
+        hold_fade_.update(dt, context_.settings.reduced_motion ? 40.0f : 14.0f);
+        toasts_.update(dt, feedback);
         burst_.update(dt, context_.settings.reduced_motion ? 40.0f : 11.0f);
         refusal_.update(dt, 9.0f);
         for (auto &entry : titles_by_id_)
@@ -425,7 +569,8 @@ class Disk final : public app::Concept
         frame.backdrop.colors[0] = Color::rgb(0x0b0e1a);
         frame.backdrop.colors[1] = Color::rgb(0x191533);
         frame.backdrop.time = clock_;
-        frame.glass = menu_.visible() || dialog_.is_open();
+        frame.glass =
+            menu_.visible() || dialog_.is_open() || drawer_.visible() || hold_fade_.value > 0.01f;
 
         ui::Canvas canvas{frame.scene, context_.fonts, 0, clock_};
         switch (screen_)
@@ -442,11 +587,19 @@ class Disk final : public app::Concept
         case Screen::explore:
             draw_explore(canvas);
             break;
+        case Screen::deleting:
+            draw_deleting(canvas);
+            break;
         }
+        if (screen_ != Screen::deleting)
+            draw_bar(canvas.list);
 
         ui::Canvas overlay{frame.overlay, context_.fonts, frame.glass_texture, clock_};
+        drawer_.draw(overlay);
+        draw_hold(overlay);
         menu_.draw(overlay);
         dialog_.draw(overlay);
+        toasts_.draw(overlay);
     }
 
   private:
@@ -481,6 +634,22 @@ class Disk final : public app::Concept
             if (!save_->error.empty())
                 last_error_ = save_->error;
             save_.reset();
+        }
+        // One save at a time, and none while a deletion may raise the
+        // effective uid: a file created then would be root's.
+        if (!save_ && !pending_saves_.empty() && screen_ != Screen::deleting)
+        {
+            PendingSave next = std::move(pending_saves_.front());
+            pending_saves_.pop_front();
+            save_ = std::make_unique<SaveJob>();
+            SaveJob *job = save_.get();
+            const std::string dir = env_.cache_dir;
+            job->thread = std::thread(
+                [job, next, dir]
+                {
+                    job->error = dk::save_cache(dir, next.info, *next.tree);
+                    job->done = true;
+                });
         }
         if (screen_ == Screen::scanning && scanner_.progress().finished)
             finish_scan(feedback);
@@ -533,8 +702,36 @@ class Disk final : public app::Concept
             show_about(feedback);
             return;
         }
+        if (input.is_pressed(Action::r3))
+        {
+            open_drawer(feedback);
+            return;
+        }
         if (volumes_.empty())
             return;
+        if (bar_focus_ && collection_.empty())
+            set_bar_focus(false);
+        if (bar_focus_)
+        {
+            if (input.nav == Direction::up)
+            {
+                set_bar_focus(false);
+                feedback.play(audio::Cue::focus);
+            }
+            else if (input.is_pressed(Action::confirm))
+                open_drawer(feedback);
+            else if (input.nav == Direction::down && !input.nav_repeat)
+                feedback.play(audio::Cue::error, 1.0f, 0.0f, 0.6f);
+            return;
+        }
+        // Down past the last card: the collection bar.
+        if (input.nav == Direction::down && !collection_.empty() &&
+            volume_list_.focus() == static_cast<int>(volumes_.size()) - 1)
+        {
+            set_bar_focus(true);
+            feedback.play(audio::Cue::focus);
+            return;
+        }
         const ui::Event event = volume_list_.handle(input, feedback);
         const auto index = static_cast<std::size_t>(volume_list_.focus());
         if (event == ui::Event::activated)
@@ -657,22 +854,14 @@ class Disk final : public app::Concept
             back_to_volumes(scanning_volume_);
             return;
         }
-        if (!env_.cache_dir.empty() && !save_)
+        if (!env_.cache_dir.empty())
         {
             // A copy, so the helper never shares the tree with the screen.
-            save_ = std::make_unique<SaveJob>();
-            SaveJob *job = save_.get();
-            auto copy = std::make_shared<dk::Tree>(*v.tree);
-            const dk::CacheInfo info = v.info;
-            const std::string dir = env_.cache_dir;
-            job->thread = std::thread(
-                [job, copy, info, dir]
-                {
-                    job->error = dk::save_cache(dir, info, *copy);
-                    job->done = true;
-                });
+            pending_saves_.push_back({v.info, std::make_shared<dk::Tree>(*v.tree)});
             v.cached = true;
         }
+        // Collected items on this volume stay if the new scan still has them.
+        retain_collection();
         feedback.play(audio::Cue::notify);
         open_explore(scanning_volume_);
     }
@@ -739,6 +928,7 @@ class Disk final : public app::Concept
         rows_.enter();
         burst_.snap(context_.settings.reduced_motion ? 1.0f : burst_from);
         burst_.target = 1.0f;
+        refresh_marks();
     }
 
     const Row *focused_row() const
@@ -766,6 +956,16 @@ class Disk final : public app::Concept
         if (input.is_pressed(Action::west))
         {
             start_scan(current_volume_, feedback);
+            return;
+        }
+        if (input.is_pressed(Action::jump_next))
+        {
+            toggle_collect(feedback);
+            return;
+        }
+        if (input.is_pressed(Action::r3))
+        {
+            open_drawer(feedback);
             return;
         }
         if (input.is_pressed(Action::north))
@@ -847,6 +1047,701 @@ class Disk final : public app::Concept
         open_volume(next, feedback);
     }
 
+    // --------------------------------------------------------- collection
+
+    // The name a drive goes by: the volume whose key it is ("Internal").
+    std::string drive_name(const std::string &drive) const
+    {
+        for (const VolumeState &v : volumes_)
+            if (v.volume.spec.key == drive)
+                return v.volume.spec.name;
+        for (const VolumeState &v : volumes_)
+            if (dk::drive_of(v.volume.spec) == drive)
+                return v.volume.spec.name;
+        return drive;
+    }
+
+    std::string canonical(const std::string &path) const
+    {
+        return dk::canonical_path(env_.protection, path);
+    }
+
+    static std::string leaf(const std::string &path)
+    {
+        const std::size_t slash = path.find_last_of('/');
+        return slash == std::string::npos ? path : path.substr(slash + 1);
+    }
+
+    // Where a row stands with the collection, and why not when it can't be
+    // collected (the toast's text).
+    void mark_row(const VolumeState &v, Row &r) const
+    {
+        r.mark = Mark::none;
+        r.title = false;
+        r.refusal.clear();
+        const auto refuse = [&r](std::string why)
+        {
+            r.mark = Mark::refused;
+            r.refusal = std::move(why);
+        };
+        if (r.kind == dk::SegmentKind::hidden)
+            return refuse("System & hidden is space the scan can't see: it can't be collected.");
+        if (r.node == dk::kNoNode)
+            return refuse("This can't be collected.");
+        if (r.node_kind == dk::Kind::other_files)
+            return refuse("Smaller files can only be collected with their folder.");
+        if ((r.flags & dk::kUnreadable) != 0)
+            return refuse("Prospero Disk couldn't read this folder, so it can't be collected.");
+        const std::string key = canonical(v.tree->path(r.node));
+        if (const dk::CollectedItem *item = collection_.find(key))
+        {
+            r.mark = Mark::collected;
+            r.title = item->kind == dk::ItemKind::title;
+            return;
+        }
+        if (const dk::CollectedItem *above = collection_.covering(key))
+        {
+            r.mark = Mark::inside;
+            r.refusal = "Already collected with " + leaf(above->path) + ".";
+            return;
+        }
+        const dk::Check check = dk::check_path(env_.protection, key);
+        if (check.verdict == dk::Verdict::title)
+            r.title = true;
+        else if (check.verdict != dk::Verdict::folder)
+            refuse(check.reason);
+    }
+
+    // The rows' marks and the hatched segments, after the view or the
+    // collection changed (never per frame: each looks up a path).
+    void refresh_marks()
+    {
+        if (current_volume_ >= volumes_.size() || !volumes_[current_volume_].tree)
+            return;
+        const VolumeState &v = volumes_[current_volume_];
+        for (Row &r : view_.rows)
+            mark_row(v, r);
+        view_.collected.assign(view_.segments.size(), false);
+        if (collection_.empty())
+            return;
+        for (std::size_t i = 0; i < view_.segments.size(); ++i)
+        {
+            const dk::Segment &seg = view_.segments[i];
+            if (seg.kind == dk::SegmentKind::node && seg.node != dk::kNoNode)
+                view_.collected[i] =
+                    collection_.covering(canonical(v.tree->path(seg.node))) != nullptr;
+        }
+    }
+
+    void refuse_with(const std::string &why, app::Feedback &feedback)
+    {
+        feedback.play(audio::Cue::error, 1.0f, 0.0f, 0.6f);
+        refusal_.trigger();
+        toasts_.clear(true);
+        toasts_.push(ui::StatusKind::warning, why);
+    }
+
+    // R2 on the focused row: collect it, or put it back.
+    void toggle_collect(app::Feedback &feedback)
+    {
+        const Row *row = focused_row();
+        if (row == nullptr)
+            return;
+        if (row->mark == Mark::refused || row->mark == Mark::inside)
+        {
+            refuse_with(row->refusal, feedback);
+            return;
+        }
+        const VolumeState &v = volumes_[current_volume_];
+        const std::string path = v.tree->path(row->node);
+        const std::string key = canonical(path);
+        if (row->mark == Mark::collected)
+        {
+            collection_.remove(key);
+            feedback.play(audio::Cue::favorite_off);
+        }
+        else
+        {
+            const dk::Check check = dk::check_path(env_.protection, key);
+            dk::CollectedItem item;
+            item.key = key;
+            item.path = path;
+            item.drive = dk::drive_of(v.volume.spec);
+            item.drive_name = drive_name(item.drive);
+            item.size = row->disk;
+            item.kind = check.verdict == dk::Verdict::title ? dk::ItemKind::title
+                        : row->node_kind == dk::Kind::file  ? dk::ItemKind::file
+                                                            : dk::ItemKind::folder;
+            item.title_id = check.title_id;
+            item.then_delete = check.then_delete;
+            collection_.add(std::move(item));
+            feedback.play(audio::Cue::favorite_on);
+        }
+        refresh_marks();
+    }
+
+    // Items a new scan no longer has leave the collection; the rest take the
+    // new sizes.
+    void retain_collection()
+    {
+        collection_.retain(
+            [this](dk::CollectedItem &item)
+            {
+                for (const std::string &spelling : dk::path_spellings(env_.protection, item.key))
+                    for (const VolumeState &v : volumes_)
+                    {
+                        if (!v.tree || !dk::path_within(spelling, v.volume.spec.path))
+                            continue;
+                        const std::uint32_t node = v.tree->find(spelling);
+                        if (node == dk::kNoNode)
+                            return false;
+                        item.size = v.tree->node(node).disk;
+                        return true;
+                    }
+                return true; // no tree shows it: keep it as it was
+            });
+        refresh_marks();
+    }
+
+    // What is collected on one volume (any spelling inside its folder).
+    std::uint64_t collected_on(const VolumeState &v) const
+    {
+        const std::string root = canonical(v.volume.spec.path);
+        std::uint64_t sum = 0;
+        for (const dk::CollectedItem *item : collection_.sorted())
+            if (dk::path_within(item->key, root))
+                sum += item->size;
+        return sum;
+    }
+
+    std::uint64_t collected_on_drive(const std::string &drive) const
+    {
+        for (const dk::DriveTotal &d : collection_.drives())
+            if (d.drive == drive)
+                return d.size;
+        return 0;
+    }
+
+    void set_bar_focus(bool focus)
+    {
+        bar_focus_ = focus;
+        volume_list_.set_active(!focus);
+    }
+
+    // ------------------------------------------------------------- drawer
+
+    // The title a collected item stands for, else its folder's name.
+    std::string item_name(const dk::CollectedItem &item) const
+    {
+        if (!item.title_id.empty())
+        {
+            const auto it = titles_by_id_.find(item.title_id);
+            if (it != titles_by_id_.end() && !it->second.name.empty())
+                return it->second.name;
+        }
+        return title_name(leaf(item.path));
+    }
+
+    void rebuild_drawer()
+    {
+        std::vector<ui::ListItem> items;
+        drawer_keys_.clear();
+        const std::vector<const dk::CollectedItem *> sorted = collection_.sorted();
+        for (const dk::DriveTotal &drive : collection_.drives())
+        {
+            ui::ListItem header;
+            header.header = true;
+            header.title = drive.name;
+            for (char &c : header.title)
+                c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
+            header.title += kDot + dk::format_bytes(drive.size);
+            header.tag = static_cast<int>(drawer_keys_.size());
+            drawer_keys_.emplace_back();
+            items.push_back(header);
+            for (const dk::CollectedItem *item : sorted)
+            {
+                if (item->drive != drive.drive)
+                    continue;
+                ui::ListItem row;
+                row.title = item_name(*item);
+                row.subtitle = item->path;
+                if (item->kind == dk::ItemKind::title)
+                    row.subtitle += "  \xc2\xb7  uninstalled through the console";
+                row.value = dk::format_bytes(item->size);
+                row.swatch = kCollect;
+                row.tag = static_cast<int>(drawer_keys_.size());
+                drawer_keys_.push_back(item->key);
+                items.push_back(row);
+            }
+        }
+        const int focus = drawer_list_.focus();
+        drawer_list_.set_items(std::move(items));
+        const Rect area = drawer_.content_rect();
+        drawer_list_.set_bounds({area.x, area.y + 50.0f, area.w, area.h - 160.0f});
+        // The first item, not the drive's header.
+        drawer_list_.set_focus(std::clamp(focus, 1, static_cast<int>(drawer_keys_.size()) - 1));
+        delete_button_.label = "Delete " + dk::format_bytes(collection_.total()) + "...";
+        // Hugging its label, at the right edge below the list.
+        const float w = delete_button_.preferred_width(context_.fonts);
+        delete_button_.set_bounds({area.x + area.w - w, area.y + area.h - 84.0f, w, 72.0f});
+    }
+
+    void open_drawer(app::Feedback &feedback)
+    {
+        if (collection_.empty())
+        {
+            refuse_with("Nothing is collected yet. In Explore, R2 collects the focused row.",
+                        feedback);
+            return;
+        }
+        drawer_list_.set_focus(1);
+        rebuild_drawer();
+        drawer_button_ = false;
+        drawer_list_.set_active(true);
+        delete_button_.set_active(false);
+        drawer_list_.enter();
+        drawer_.open(feedback);
+    }
+
+    void handle_drawer(const InputFrame &input, app::Feedback &feedback)
+    {
+        if (drawer_.handle(input, feedback) == ui::Event::cancelled)
+            return;
+        if (input.is_pressed(Action::north))
+        {
+            ask_ = Ask::put_all_back;
+            dialog_.open({ui::StatusKind::question,
+                          "Put everything back?",
+                          "The collection is emptied. Nothing is deleted.",
+                          {{"Cancel"}, {"Put all back", ui::ButtonKind::primary}}},
+                         feedback);
+            return;
+        }
+        if (drawer_button_)
+        {
+            if (input.nav == Direction::up)
+            {
+                drawer_button_ = false;
+                drawer_list_.set_active(true);
+                delete_button_.set_active(false);
+                feedback.play(audio::Cue::focus);
+            }
+            else if (delete_button_.handle(input, feedback) == ui::Event::activated)
+                open_confirm(feedback);
+            return;
+        }
+        // Down past the last item: the delete button, never the first focus.
+        if (input.nav == Direction::down &&
+            drawer_list_.focus() == static_cast<int>(drawer_keys_.size()) - 1)
+        {
+            drawer_button_ = true;
+            drawer_list_.set_active(false);
+            delete_button_.set_active(true);
+            feedback.play(audio::Cue::focus);
+            return;
+        }
+        if (drawer_list_.handle(input, feedback) != ui::Event::activated)
+            return;
+        // Cross puts the focused item back.
+        const int f = drawer_list_.focus();
+        if (f < 0 || f >= static_cast<int>(drawer_keys_.size()) || drawer_keys_[f].empty())
+            return;
+        collection_.remove(drawer_keys_[static_cast<std::size_t>(f)]);
+        feedback.play(audio::Cue::favorite_off);
+        refresh_marks();
+        if (collection_.empty())
+        {
+            drawer_.close(feedback);
+            set_bar_focus(false);
+            return;
+        }
+        rebuild_drawer();
+    }
+
+    // ------------------------------------------------------------ confirm
+
+    void open_confirm(app::Feedback &feedback)
+    {
+        const std::vector<dk::DriveTotal> drives = collection_.drives();
+        std::string where;
+        for (std::size_t i = 0; i < drives.size(); ++i)
+        {
+            where += (i == 0                   ? ""
+                      : i + 1 == drives.size() ? " and "
+                                               : ", ") +
+                     drives[i].name + " (" + dk::format_bytes(drives[i].size) + ")";
+        }
+        std::string body =
+            dk::format_bytes(collection_.total()) + " will be deleted from " + where + ".\n";
+        std::size_t titles = 0;
+        std::string largest;
+        const std::vector<const dk::CollectedItem *> sorted = collection_.sorted();
+        std::vector<const dk::CollectedItem *> by_size = sorted;
+        std::stable_sort(by_size.begin(), by_size.end(),
+                         [](const dk::CollectedItem *a, const dk::CollectedItem *b)
+                         { return a->size > b->size; });
+        for (const dk::CollectedItem *item : sorted)
+            titles += item->kind == dk::ItemKind::title ? 1u : 0u;
+        for (std::size_t i = 0; i < by_size.size() && i < 4; ++i)
+            largest += (i == 0 ? "" : kDot) + item_name(*by_size[i]) + " " +
+                       dk::format_bytes(by_size[i]->size);
+        if (by_size.size() > 4)
+            largest += kDot + std::string("and ") + std::to_string(by_size.size() - 4) + " more";
+        if (titles != 0)
+            body += std::to_string(titles) + (titles == 1 ? " game is" : " games are") +
+                    " uninstalled through the console.\n";
+        body += "Be sure about what you are deleting: deleting files can have unintended "
+                "consequences.\n" +
+                largest;
+        const std::size_t count = collection_.size();
+        ask_ = Ask::confirm;
+        dialog_.open({ui::StatusKind::danger,
+                      "Delete " + std::to_string(count) + (count == 1 ? " item?" : " items?"),
+                      body,
+                      {{"Cancel"}, {"Continue", ui::ButtonKind::primary, true}},
+                      0},
+                     feedback);
+    }
+
+    void handle_dialog(const InputFrame &input, app::Feedback &feedback)
+    {
+        const ui::Event event = dialog_.handle(input, feedback);
+        if (event != ui::Event::activated && event != ui::Event::cancelled)
+            return;
+        const Ask ask = ask_;
+        ask_ = Ask::none;
+        const bool yes = event == ui::Event::activated && dialog_.choice() == 1;
+        if (ask == Ask::put_all_back && yes)
+        {
+            collection_.clear();
+            refresh_marks();
+            drawer_.close(feedback);
+            set_bar_focus(false);
+        }
+        else if (ask == Ask::confirm && yes)
+            open_hold(feedback);
+    }
+
+    void open_hold(app::Feedback &feedback)
+    {
+        hold_open_ = true;
+        hold_was_held_ = false;
+        hold_.reset();
+        hold_.set_active(true);
+        feedback.play(audio::Cue::modal_open);
+    }
+
+    void close_hold(app::Feedback &feedback)
+    {
+        hold_open_ = false;
+        hold_.reset();
+        hold_.set_active(false);
+        feedback.play(audio::Cue::modal_close);
+        toasts_.clear(true);
+        toasts_.push(ui::StatusKind::info, "Nothing was deleted.");
+    }
+
+    // The second confirmation: Cross held for two seconds. Letting go early,
+    // a tap, or Circle cancels with nothing deleted.
+    void handle_hold(const InputFrame &input, app::Feedback &feedback)
+    {
+        if (input.is_pressed(Action::back))
+        {
+            close_hold(feedback);
+            return;
+        }
+        const ui::Event event = hold_.handle(input, feedback);
+        if (event == ui::Event::activated)
+        {
+            hold_open_ = false;
+            hold_.set_active(false);
+            begin_delete(feedback);
+            return;
+        }
+        if (event == ui::Event::refused || (hold_was_held_ && !hold_.holding()))
+        {
+            close_hold(feedback);
+            return;
+        }
+        hold_was_held_ = hold_.holding();
+    }
+
+    // ----------------------------------------------------------- deleting
+
+    void begin_delete(app::Feedback &feedback)
+    {
+        drawer_.dismiss();
+        // A tour on the console's real drives must never delete: nobody chose.
+        if (context_.scripted && !env_.fixture)
+        {
+            ask_ = Ask::result;
+            dialog_.open({ui::StatusKind::info,
+                          "Nothing was deleted",
+                          "A tour drove the controller, so Prospero Disk deleted nothing.",
+                          {{"OK", ui::ButtonKind::primary}}},
+                         feedback);
+            return;
+        }
+        delete_return_ = screen_;
+        centre_path_.clear();
+        focus_path_.clear();
+        if (screen_ == Screen::explore && volumes_[current_volume_].tree)
+        {
+            const dk::Tree &tree = *volumes_[current_volume_].tree;
+            centre_path_ = tree.path(view_.centre);
+            if (const Row *row = focused_row(); row != nullptr && row->node != dk::kNoNode)
+                focus_path_ = tree.path(row->node);
+        }
+        // statfs before, per drive, for the result: what really came free.
+        space_before_.clear();
+        for (const dk::DriveTotal &d : collection_.drives())
+            for (const VolumeState &v : volumes_)
+            {
+                dk::SpaceInfo space;
+                if (dk::drive_of(v.volume.spec) == d.drive &&
+                    env_.fs->space(v.volume.spec.path, &space))
+                {
+                    space_before_[d.drive] = space;
+                    break;
+                }
+            }
+        screen_ = Screen::deleting;
+        delete_pending_ = true;
+        delete_age_ = 0.0f;
+        set_bar_focus(false);
+        feedback.play(audio::Cue::launch);
+    }
+
+    // The volume an item was collected from: the deepest one holding its path.
+    std::string volume_root_of(const std::string &path) const
+    {
+        std::string best;
+        for (const VolumeState &v : volumes_)
+            if (dk::path_within(path, v.volume.spec.path) &&
+                v.volume.spec.path.size() > best.size())
+                best = v.volume.spec.path;
+        return best;
+    }
+
+    void start_deleter()
+    {
+        dk::DeleteOptions options;
+        for (const dk::CollectedItem *item : collection_.sorted())
+            options.jobs.push_back({*item, volume_root_of(item->path)});
+        options.rules = env_.protection;
+        options.remover = env_.remover.get();
+        options.privileged = env_.privileged;
+        options.trash_dir = env_.trash_dir;
+        options.log = [](const std::string &line)
+        { std::fprintf(stderr, "[PD] %s\n", line.c_str()); };
+        // The fixture paces itself by the screen's clock, as for a scan.
+        env_.fs->begin();
+        deleter_.start(*env_.fs, std::move(options));
+        delete_pending_ = false;
+    }
+
+    void handle_deleting(const InputFrame &input, app::Feedback &feedback, float dt)
+    {
+        delete_age_ += dt;
+        if (delete_pending_)
+        {
+            // A cache file still being written finishes first.
+            if (!save_)
+                start_deleter();
+            return;
+        }
+        const dk::DeleteProgress p = deleter_.progress();
+        if (input.is_pressed(Action::back) && !p.stopping && !p.finished)
+        {
+            deleter_.stop();
+            feedback.play(audio::Cue::back);
+        }
+        if (p.finished)
+            finish_delete(feedback);
+    }
+
+    // Removes a path from every loaded tree that shows it; true when one did.
+    bool drop_from_trees(const std::string &key, std::set<std::size_t> &edited)
+    {
+        bool any = false;
+        for (const std::string &spelling : dk::path_spellings(env_.protection, key))
+            for (std::size_t i = 0; i < volumes_.size(); ++i)
+            {
+                VolumeState &v = volumes_[i];
+                if (!v.tree || !dk::path_within(spelling, v.volume.spec.path))
+                    continue;
+                const std::uint32_t node = v.tree->find(spelling);
+                if (node == dk::kNoNode || node == v.tree->root())
+                    continue;
+                v.tree->remove(node);
+                edited.insert(i);
+                any = true;
+            }
+        return any;
+    }
+
+    void finish_delete(app::Feedback &feedback)
+    {
+        env_.fs->release();
+        std::vector<dk::ItemResult> results = deleter_.take();
+        std::set<std::size_t> edited;
+        std::set<std::string> drives;
+        for (const dk::ItemResult &r : results)
+        {
+            if (r.outcome == dk::Outcome::skipped || r.outcome == dk::Outcome::failed)
+                continue;
+            drives.insert(r.item.drive);
+            if (r.outcome == dk::Outcome::partly && r.left)
+            {
+                // What is left of the folder, as a scan of it found.
+                for (const std::string &spelling : dk::path_spellings(env_.protection, r.item.key))
+                    for (std::size_t i = 0; i < volumes_.size(); ++i)
+                    {
+                        VolumeState &v = volumes_[i];
+                        if (!v.tree || !dk::path_within(spelling, v.volume.spec.path))
+                            continue;
+                        const std::uint32_t node = v.tree->find(spelling);
+                        if (node != dk::kNoNode && node != v.tree->root())
+                        {
+                            v.tree->replace(node, *r.left);
+                            edited.insert(i);
+                        }
+                    }
+            }
+            if (r.outcome == dk::Outcome::removed)
+            {
+                drop_from_trees(r.item.key, edited);
+                collection_.remove(r.item.key);
+            }
+            // A game takes its patch, add-ons and metadata with it; drop those
+            // the console removed, wherever a tree shows them.
+            std::vector<std::string> gone = r.item.then_delete;
+            if (r.item.kind == dk::ItemKind::title)
+                for (const VolumeState &v : volumes_)
+                    for (const char *folder : {"/patch/", "/addcont/", "/appmeta/", "/user/patch/",
+                                               "/user/addcont/", "/user/app/"})
+                        gone.push_back(v.volume.spec.path + folder + r.item.title_id);
+            for (const std::string &path : gone)
+            {
+                dk::Entry still;
+                if (!env_.fs->stat(path, &still) && errno == ENOENT)
+                    drop_from_trees(canonical(path), edited);
+            }
+        }
+        // statfs again for every volume on a drive that changed, so "System
+        // & hidden" and the free space add up.
+        for (VolumeState &v : volumes_)
+            if (drives.count(dk::drive_of(v.volume.spec)) != 0)
+            {
+                dk::SpaceInfo space;
+                if (env_.fs->space(v.volume.spec.path, &space))
+                {
+                    v.volume.space = space;
+                    v.volume.has_space = true;
+                    v.info.space = space;
+                }
+            }
+        // The edited trees go back to their cache files; a cached volume on
+        // that drive that is not loaded is out of date and is dropped.
+        for (std::size_t i = 0; i < volumes_.size(); ++i)
+        {
+            VolumeState &v = volumes_[i];
+            if (edited.count(i) != 0 && !v.partial && !env_.cache_dir.empty())
+                pending_saves_.push_back({v.info, std::make_shared<dk::Tree>(v.tree->compacted())});
+            else if (!v.tree && v.cached && drives.count(dk::drive_of(v.volume.spec)) != 0)
+            {
+                std::remove(dk::cache_path(env_.cache_dir, v.volume.spec.key).c_str());
+                v.cached = false;
+            }
+        }
+        retain_collection();
+
+        screen_ = delete_return_;
+        if (screen_ == Screen::explore)
+            recentre();
+        else
+            back_to_volumes(static_cast<std::size_t>(std::max(0, volume_list_.focus())));
+        show_result(results, feedback);
+    }
+
+    // Back where the user was, or the nearest folder above it that is left.
+    void recentre()
+    {
+        const VolumeState &v = volumes_[current_volume_];
+        std::string path = centre_path_;
+        std::uint32_t node = dk::kNoNode;
+        while (!path.empty())
+        {
+            node = v.tree->find(path);
+            if (node != dk::kNoNode)
+                break;
+            const std::size_t slash = path.find_last_of('/');
+            path = slash == std::string::npos ? std::string() : path.substr(0, slash);
+        }
+        if (node == dk::kNoNode)
+            node = v.tree->root();
+        const std::uint32_t focus = focus_path_.empty() ? dk::kNoNode : v.tree->find(focus_path_);
+        set_centre(node, 1.0f, focus);
+    }
+
+    void show_result(const std::vector<dk::ItemResult> &results, app::Feedback &feedback)
+    {
+        std::uint64_t freed = 0;
+        std::string body;
+        for (const auto &[drive, before] : space_before_)
+        {
+            for (const VolumeState &v : volumes_)
+            {
+                if (dk::drive_of(v.volume.spec) != drive || !v.volume.has_space)
+                    continue;
+                const std::uint64_t up =
+                    v.volume.space.free > before.free ? v.volume.space.free - before.free : 0;
+                freed += up;
+                body += drive_name(drive) + " now has " + dk::format_bytes(v.volume.space.free) +
+                        " free, up " + dk::format_bytes(up) + ".\n";
+                break;
+            }
+        }
+        std::vector<const dk::ItemResult *> failed;
+        std::size_t skipped = 0;
+        for (const dk::ItemResult &r : results)
+        {
+            if (r.outcome == dk::Outcome::failed || r.outcome == dk::Outcome::partly)
+                failed.push_back(&r);
+            skipped += r.outcome == dk::Outcome::skipped ? 1u : 0u;
+        }
+        if (!failed.empty())
+        {
+            body += std::to_string(failed.size()) +
+                    (failed.size() == 1 ? " item couldn't be deleted and is"
+                                        : " items couldn't be deleted and are") +
+                    " still collected:\n";
+            for (std::size_t i = 0; i < failed.size() && i < 3; ++i)
+            {
+                const dk::ItemResult &r = *failed[i];
+                std::string why = r.reason;
+                if (why.empty() && r.error != 0)
+                    why = std::strerror(r.error);
+                body += r.item.path + kDot + why + "\n";
+            }
+            if (failed.size() > 3)
+                body += "and " + std::to_string(failed.size() - 3) + " more (see app.log).\n";
+        }
+        if (skipped != 0)
+            body += "Stopped: " + std::to_string(skipped) +
+                    (skipped == 1 ? " item was" : " items were") +
+                    " not started and stays collected.\n";
+        if (!body.empty() && body.back() == '\n')
+            body.pop_back();
+        ask_ = Ask::result;
+        dialog_.open(
+            {failed.empty() ? ui::StatusKind::success : ui::StatusKind::warning,
+             freed != 0 ? dk::format_bytes(freed) + " freed" : std::string("Nothing was freed"),
+             body,
+             {{"OK", ui::ButtonKind::primary}}},
+            feedback);
+    }
+
     // --------------------------------------------------------------- menu
 
     void handle_menu(const InputFrame &input, app::Feedback &feedback)
@@ -925,6 +1820,19 @@ class Disk final : public app::Concept
                        static_cast<int>(hints.size()), 1824, true);
     }
 
+    static float share_of(std::uint64_t part, std::uint64_t whole)
+    {
+        return whole == 0 ? 0.0f
+                          : std::clamp(static_cast<float>(static_cast<double>(part) /
+                                                          static_cast<double>(whole)),
+                                       0.0f, 1.0f);
+    }
+
+    static float used_share(const VolumeState &v)
+    {
+        return share_of(v.volume.space.used, v.volume.space.total);
+    }
+
     static void draw_usage_bar(gfx::DrawList &list, const Rect &r, std::uint64_t used,
                                std::uint64_t total, Color fill)
     {
@@ -993,14 +1901,31 @@ class Disk final : public app::Concept
                      kFaint);
             return;
         }
-        draw_usage_bar(list, {row.x + 124, row.y + 80, row.w - 160, 14}, v.volume.space.used,
-                       v.volume.space.total, tint);
-        ui::text(list, context_.fonts.regular, dk::format_bytes(v.volume.space.used) + " used",
-                 row.x + 124, row.y + 128, 24, kMuted);
-        ui::text(list, context_.fonts.regular,
-                 dk::format_bytes(v.volume.space.free) + " free of " +
-                     dk::format_bytes(v.volume.space.total),
-                 row.x + row.w - 36, row.y + 128, 24, kFaint, gfx::Align::right);
+        const Rect bar{row.x + 124, row.y + 80, row.w - 160, 14};
+        draw_usage_bar(list, bar, v.volume.space.used, v.volume.space.total, tint);
+        const std::uint64_t mine = collected_on(v);
+        const std::uint64_t drive = collected_on_drive(dk::drive_of(v.volume.spec));
+        if (mine != 0)
+        {
+            // The collected part of "used", hatched at its end.
+            const float w = bar.w * share_of(mine, v.volume.space.total);
+            hatched_bar(list, {bar.x + bar.w * used_share(v) - w, bar.y, w, bar.h});
+        }
+        const std::string used = dk::format_bytes(v.volume.space.used) + " used";
+        ui::text(list, context_.fonts.regular, used, row.x + 124, row.y + 128, 24, kMuted);
+        if (mine != 0)
+            ui::text(list, context_.fonts.regular, kDot + dk::format_bytes(mine) + " collected",
+                     row.x + 124 + context_.fonts.regular.measure(used, 24), row.y + 128, 24,
+                     kCollectInk);
+        if (drive != 0)
+            ui::text(list, context_.fonts.regular,
+                     dk::format_bytes(v.volume.space.free + drive) + " free after delete",
+                     row.x + row.w - 36, row.y + 128, 24, kCollectInk, gfx::Align::right);
+        else
+            ui::text(list, context_.fonts.regular,
+                     dk::format_bytes(v.volume.space.free) + " free of " +
+                         dk::format_bytes(v.volume.space.total),
+                     row.x + row.w - 36, row.y + 128, 24, kFaint, gfx::Align::right);
     }
 
     void draw_volumes(ui::Canvas &canvas) const
@@ -1029,14 +1954,16 @@ class Disk final : public app::Concept
         volume_list_.draw(canvas);
 
         const VolumeState &v = volumes_[static_cast<std::size_t>(volume_list_.focus())];
-        const ui::Hint scanned[] = {{ui::Button::cross, "Open"},
-                                    {ui::Button::square, "Rescan"},
-                                    {ui::Button::options, "About"}};
-        const ui::Hint fresh[] = {{ui::Button::cross, "Scan"}, {ui::Button::options, "About"}};
-        if (v.tree || v.cached)
-            draw_hints(list, scanned);
+        std::vector<ui::Hint> hints;
+        if (bar_focus_)
+            hints = {{ui::Button::cross, "Review"}, {ui::Button::options, "About"}};
+        else if (v.tree || v.cached)
+            hints = {{ui::Button::cross, "Open"},
+                     {ui::Button::square, "Rescan"},
+                     {ui::Button::options, "About"}};
         else
-            draw_hints(list, fresh);
+            hints = {{ui::Button::cross, "Scan"}, {ui::Button::options, "About"}};
+        draw_hints(list, hints);
     }
 
     void draw_loading(ui::Canvas &canvas) const
@@ -1071,15 +1998,16 @@ class Disk final : public app::Concept
             const float alpha = lit ? 1.0f : 0.4f;
             if (s.kind == dk::SegmentKind::hidden)
             {
-                // Hatched: short dashes of two greys along the arc.
-                constexpr float kDash = 0.045f;
-                const int dashes = static_cast<int>(std::ceil(sweep / kDash));
-                for (int i = 0; i < dashes; ++i)
-                {
-                    const float a = static_cast<float>(i) * kDash;
-                    list.arc(cx, cy, outer, kRing, s.start + a, std::min(kDash, sweep - a),
-                             (i % 2 == 0 ? kHiddenA : kHiddenB).with_alpha(alpha), false);
-                }
+                hatched_arc(list, cx, cy, outer, kRing, s.start, sweep, kHiddenA.with_alpha(alpha),
+                            kHiddenB.with_alpha(alpha));
+                continue;
+            }
+            const std::size_t index = static_cast<std::size_t>(&s - view.segments.data());
+            if (index < view.collected.size() && view.collected[index])
+            {
+                // Collected: amber hatching, seen while browsing.
+                hatched_arc(list, cx, cy, outer, kRing, s.start, sweep, kCollect.with_alpha(alpha),
+                            kCollectDark.with_alpha(alpha));
                 continue;
             }
             if (s.kind == dk::SegmentKind::smaller)
@@ -1222,8 +2150,26 @@ class Disk final : public app::Concept
         }
 
         const ui::FontRef &bold = context_.fonts.semibold;
-        ui::text(list, bold, bold.font->fit(display_name(r), 26, row.w - 330), row.x + 82,
-                 row.y + 31, 26, kInk);
+        const bool collected = r.mark == Mark::collected;
+        const char *tag = collected && r.title     ? "Uninstall"
+                          : collected              ? "Collected"
+                          : r.mark == Mark::inside ? "In collection"
+                                                   : nullptr;
+        const float tag_w = tag != nullptr ? bold.measure(tag, 16) + 20.0f : 0.0f;
+        const std::string name =
+            bold.font->fit(display_name(r), 26, row.w - 330 - (tag_w > 0 ? tag_w + 12.0f : 0.0f));
+        ui::text(list, bold, name, row.x + 82, row.y + 31, 26, collected ? kCollectInk : kInk);
+        if (tag != nullptr)
+        {
+            const Rect pill{row.x + 82 + bold.measure(name, 26) + 12.0f, row.y + 10.0f, tag_w,
+                            26.0f};
+            if (collected)
+                list.rounded_rect(pill, 6.0f, kCollect);
+            else
+                list.bordered_rect(pill, 6.0f, Color::rgb(0x000000, 0.0f), 1.5f, kCollect);
+            ui::text(list, bold, tag, pill.x + pill.w * 0.5f, pill.y + 19.0f, 16,
+                     collected ? Color::rgb(0x1b1405) : kCollect, gfx::Align::center);
+        }
         std::string sub;
         if (r.kind == dk::SegmentKind::hidden)
             sub = "Used space the scan cannot see";
@@ -1240,7 +2186,7 @@ class Disk final : public app::Concept
         sub += kDot + dk::format_share(r.disk, whole);
         ui::text(list, context_.fonts.regular, sub, row.x + 82, row.y + 58, 20, kMuted);
         ui::text(list, context_.fonts.mono, dk::format_bytes(r.disk), row.x + row.w - 26,
-                 row.y + 44, 25, kInk, gfx::Align::right);
+                 row.y + 44, 25, collected ? kCollectInk : kInk, gfx::Align::right);
     }
 
     void draw_detail(gfx::DrawList &list, const Row &r) const
@@ -1308,10 +2254,24 @@ class Disk final : public app::Concept
         {
             draw_usage_bar(list, {1010, 82, 814, 12}, v.volume.space.used, v.volume.space.total,
                            kAccent);
-            ui::text(list, context_.fonts.regular,
-                     dk::format_bytes(v.volume.space.used) + " used" + kDot +
-                         dk::format_bytes(v.volume.space.free) + " free",
-                     1824, 128, 22, kMuted, gfx::Align::right);
+            const std::string usage = dk::format_bytes(v.volume.space.used) + " used" + kDot +
+                                      dk::format_bytes(v.volume.space.free) + " free";
+            const std::uint64_t collected = collected_on_drive(dk::drive_of(v.volume.spec));
+            float right = 1824.0f;
+            if (collected != 0)
+            {
+                const std::string after =
+                    kDot + dk::format_bytes(v.volume.space.free + collected) + " after delete";
+                ui::text(list, context_.fonts.regular, after, right, 128, 22, kCollectInk,
+                         gfx::Align::right);
+                right -= context_.fonts.regular.measure(after, 22);
+                hatched_bar(list, {1010.0f + 814.0f * used_share(v) -
+                                       814.0f * share_of(collected_on(v), v.volume.space.total),
+                                   82.0f, 814.0f * share_of(collected_on(v), v.volume.space.total),
+                                   12.0f});
+            }
+            ui::text(list, context_.fonts.regular, usage, right, 128, 22, kMuted,
+                     gfx::Align::right);
         }
         ui::text(list, context_.fonts.regular,
                  context_.fonts.regular.font->fit(breadcrumb(), 26, 860), kMargin, 166, 26, kMuted);
@@ -1349,11 +2309,178 @@ class Disk final : public app::Concept
         if (focus != nullptr)
             draw_detail(list, *focus);
 
-        const ui::Hint hints[] = {
-            {ui::Button::cross, "Open"},    {ui::Button::circle, "Up"},
-            {ui::Button::square, "Rescan"}, {ui::Button::triangle, "Sort"},
-            {ui::Button::options, "Menu"},  {ui::Button::l1, "Volume", ui::Button::r1}};
+        // R2 is offered only where it does something.
+        std::vector<ui::Hint> hints = {{ui::Button::cross, "Open"},
+                                       {ui::Button::circle, "Up"},
+                                       {ui::Button::square, "Rescan"}};
+        if (focus != nullptr && (focus->mark == Mark::none || focus->mark == Mark::collected))
+            hints.push_back(
+                {ui::Button::r2, focus->mark == Mark::collected ? "Put back" : "Collect"});
+        hints.push_back({ui::Button::triangle, "Sort"});
+        hints.push_back({ui::Button::options, "Menu"});
+        if (collection_.empty())
+            hints.push_back({ui::Button::l1, "Volume", ui::Button::r1});
         draw_hints(list, hints);
+    }
+
+    // Short dashes of two colours along an arc: the hatching that marks
+    // "System & hidden" and what is collected.
+    static void hatched_arc(gfx::DrawList &list, float cx, float cy, float outer, float ring,
+                            float start, float sweep, Color a, Color b)
+    {
+        constexpr float kDash = 0.045f;
+        const int dashes = static_cast<int>(std::ceil(sweep / kDash));
+        for (int i = 0; i < dashes; ++i)
+        {
+            const float at = static_cast<float>(i) * kDash;
+            list.arc(cx, cy, outer, ring, start + at, std::min(kDash, sweep - at),
+                     i % 2 == 0 ? a : b, false);
+        }
+    }
+
+    // Diagonal stripes inside a bar: the collected share of a drive.
+    static void hatched_bar(gfx::DrawList &list, const Rect &r)
+    {
+        if (r.w <= 0.0f)
+            return;
+        list.rounded_rect(r, r.h * 0.5f, kCollectDark);
+        const int stripes = static_cast<int>(r.w / 12.0f);
+        for (int i = 0; i < stripes; ++i)
+        {
+            const float x = r.x + static_cast<float>(i) * 12.0f;
+            list.rounded_rect({x, r.y, 6.0f, r.h}, 1.0f, kCollect);
+        }
+    }
+
+    // The collection bar: bottom left on every screen while something is
+    // collected. Focusable on Volumes.
+    void draw_bar(gfx::DrawList &list) const
+    {
+        if (collection_.empty())
+            return;
+        const ui::FontRef &bold = context_.fonts.semibold;
+        const ui::FontRef &regular = context_.fonts.regular;
+        const std::string total = dk::format_bytes(collection_.total()) + " collected";
+        std::string drives;
+        for (const dk::DriveTotal &d : collection_.drives())
+            drives += (drives.empty() ? "" : "    ") + d.name + "  " + dk::format_bytes(d.size);
+        const float text_w = std::max(bold.measure(total, 27), regular.measure(drives, 21));
+        const ui::Hint review[] = {{ui::Button::right_stick, "Review"}};
+        ui::HintLayout layout;
+        layout.size = 34.0f;
+        layout.text_size = 22.0f;
+        const float hint_w = ui::measure_hints(context_.fonts, review, 1, layout);
+        const Rect r{kMargin, 968.0f, 92.0f + text_w + 36.0f + hint_w + 30.0f, 78.0f};
+        const bool focus = bar_focus_ && screen_ == Screen::volumes;
+        list.bordered_rect(r, 39.0f, Color::rgb(0x201e38, 0.94f), focus ? 3.0f : 2.0f,
+                           focus ? kInk : kCollect.with_alpha(0.55f));
+        const float cx = r.x + 40.0f;
+        const float cy = r.y + 39.0f;
+        list.ring(cx, cy, 28.0f, 3.0f, kCollect);
+        ui::text(list, bold, std::to_string(collection_.size()), cx, cy + 8.0f, 22, kCollect,
+                 gfx::Align::center);
+        ui::text(list, bold, total, r.x + 92.0f, r.y + 34.0f, 27, kInk);
+        ui::text(list, regular, drives, r.x + 92.0f, r.y + 64.0f, 21, kMuted);
+        layout.cy = cy;
+        ui::draw_hints(list, context_.fonts, ui::GlyphStyle::dark(), review, 1, r.x + r.w - 30.0f,
+                       true, layout);
+    }
+
+    void draw_drawer(ui::Canvas &canvas, const Rect &area) const
+    {
+        gfx::DrawList &list = canvas.list;
+        const std::size_t drives = collection_.drives().size();
+        const std::string sub =
+            std::to_string(collection_.size()) + (collection_.size() == 1 ? " item" : " items") +
+            kDot + dk::format_bytes(collection_.total()) + " on " + std::to_string(drives) +
+            (drives == 1 ? " drive" : " drives") + ". Nothing is deleted until you confirm.";
+        ui::text(list, context_.fonts.regular, sub, area.x, area.y + 28.0f, 24, kMuted);
+        drawer_list_.draw(canvas);
+        const ui::Hint hints[] = {{ui::Button::cross, "Put back"},
+                                  {ui::Button::triangle, "Put all back"},
+                                  {ui::Button::circle, "Close"}};
+        ui::HintLayout layout;
+        layout.cy = area.y + area.h - 48.0f;
+        ui::draw_hints(list, context_.fonts, ui::GlyphStyle::dark(), hints, 3, area.x, false,
+                       layout);
+        delete_button_.draw(canvas);
+    }
+
+    // The second confirmation: a panel over a veil, with the hold button.
+    void draw_hold(ui::Canvas &canvas) const
+    {
+        const float a = std::clamp(hold_fade_.value, 0.0f, 1.0f);
+        if (a <= 0.01f || screen_ == Screen::deleting)
+            return;
+        gfx::DrawList &list = canvas.list;
+        list.rounded_rect({0, 0, gfx::kVirtualWidth, gfx::kVirtualHeight}, 0.0f,
+                          Color::rgb(0x060710, 0.62f * a));
+        const Rect panel{460.0f, 340.0f + 30.0f * (1.0f - a), 1000.0f, 400.0f};
+        list.push_opacity(a);
+        list.bordered_rect(panel, 26.0f, Color::rgb(0x1d1f36), 2.0f, Color::rgb(0x464c6d));
+        list.circle(panel.x + 88.0f, panel.y + 88.0f, 32.0f, Color::rgb(0xe5484d, 0.18f));
+        ui::text(list, context_.fonts.semibold, "!", panel.x + 88.0f, panel.y + 101.0f, 38,
+                 Color::rgb(0xff7a7f), gfx::Align::center);
+        ui::text(list, context_.fonts.display, "Are you sure?", panel.x + 56.0f, panel.y + 186.0f,
+                 42, kInk);
+        ui::text(list, context_.fonts.regular,
+                 "This is the last step. Hold Cross to delete " +
+                     dk::format_bytes(collection_.total()) + ". Let go to cancel.",
+                 panel.x + 56.0f, panel.y + 240.0f, 25, kMuted);
+        const ui::Hint cancel[] = {{ui::Button::circle, "Cancel"}};
+        ui::HintLayout layout;
+        layout.cy = panel.y + panel.h - 80.0f;
+        ui::draw_hints(list, context_.fonts, ui::GlyphStyle::dark(), cancel, 1, panel.x + 56.0f,
+                       false, layout);
+        hold_.draw(canvas);
+        list.pop_opacity();
+    }
+
+    void draw_deleting(ui::Canvas &canvas) const
+    {
+        gfx::DrawList &list = canvas.list;
+        const dk::DeleteProgress p = deleter_.progress();
+        const float x = 410.0f;
+        const float w = 1100.0f;
+        ui::text(list, context_.fonts.display, "Deleting...", x, 420.0f, 48, kInk);
+        ui::text(list, context_.fonts.regular, "Don't turn off the console or remove a drive.", x,
+                 470.0f, 26, kMuted);
+        const Rect bar{x, 520.0f, w, 18.0f};
+        list.rounded_rect(bar, 9.0f, Color::rgb(0x2a2d45));
+        const std::uint64_t planned = std::max<std::uint64_t>(p.planned, 1);
+        const float share = std::clamp(
+            static_cast<float>(static_cast<double>(p.done) / static_cast<double>(planned)), 0.0f,
+            1.0f);
+        if (share > 0.0f)
+            list.rounded_rect({bar.x, bar.y, std::max(bar.h, bar.w * share), bar.h}, 9.0f,
+                              Color::rgb(0xe5484d));
+        ui::text(list, context_.fonts.regular,
+                 dk::format_bytes(std::min(p.done, p.planned)) + " of " +
+                     dk::format_bytes(p.planned),
+                 x, 586.0f, 26, kInk);
+        const std::size_t items = std::max<std::size_t>(p.items, collection_.size());
+        ui::text(list, context_.fonts.regular,
+                 "Item " + std::to_string(std::min(p.item + 1, std::max<std::size_t>(items, 1))) +
+                     " of " + std::to_string(items),
+                 x + w, 586.0f, 26, kMuted, gfx::Align::right);
+        // "Uninstalling PPSA10021" reads better with the game's name.
+        std::string current = p.current;
+        constexpr std::string_view kUninstalling = "Uninstalling ";
+        if (current.rfind(kUninstalling, 0) == 0)
+            current = std::string(kUninstalling) +
+                      title_name(std::string_view(current).substr(kUninstalling.size()));
+        ui::text(list, context_.fonts.mono, context_.fonts.mono.font->fit(current, 21, w), x,
+                 640.0f, 21, kFaint);
+        if (p.stopping && !p.finished)
+        {
+            const ui::Hint hints[] = {{ui::Button::none, "Stopping after this item..."}};
+            draw_hints(list, hints);
+        }
+        else
+        {
+            const ui::Hint hints[] = {{ui::Button::circle, "Stop after this item"}};
+            draw_hints(list, hints);
+        }
     }
 
     // ---------------------------------------------------------------- state
@@ -1382,6 +2509,30 @@ class Disk final : public app::Concept
     ui::ListView rows_;
     ui::Menu menu_;
     ui::Dialog dialog_;
+    ui::ToastStack toasts_;
+
+    // Collect and delete (docs/plans/collect-delete.md): the session's
+    // collection, the review drawer, the two confirmations, the deleter.
+    dk::Collection collection_;
+    bool bar_focus_ = false; // Volumes: the bar below the cards has the focus
+    ui::Sheet drawer_;
+    ui::ListView drawer_list_;
+    std::vector<std::string> drawer_keys_; // per drawer row: the item's key ("" for a header)
+    ui::PushButton delete_button_;
+    bool drawer_button_ = false; // the delete button has the focus, not the list
+    Ask ask_ = Ask::none;
+    ui::HoldButton hold_;
+    bool hold_open_ = false;
+    bool hold_was_held_ = false;
+    tween::Spring hold_fade_;
+    dk::Deleter deleter_;
+    bool delete_pending_ = false; // waiting for a cache save to finish first
+    float delete_age_ = 0.0f;
+    Screen delete_return_ = Screen::volumes;
+    std::string centre_path_; // where Explore was, to come back after
+    std::string focus_path_;
+    std::map<std::string, dk::SpaceInfo> space_before_; // per drive
+    std::deque<PendingSave> pending_saves_;
     tween::Spring burst_;
     ui::Pulse refusal_;
     float clock_ = 0.0f;
