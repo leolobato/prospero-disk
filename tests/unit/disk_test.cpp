@@ -644,9 +644,9 @@ TEST(DiskVolumes, FixtureVolumesAreDetected)
 {
     const auto fs = make_fixture_filesystem();
     const std::vector<Volume> volumes =
-        detect_volumes(*fs, {{"internal", "Internal", kFixtureRoot, VolumeKind::internal},
-                             {"usb0", "USB 1", kFixtureUsbRoot, VolumeKind::usb},
-                             {"usb1", "USB 2", "/fixture/usb1", VolumeKind::usb}});
+        detect_volumes(*fs, {{"internal", "Internal", kFixtureRoot, VolumeKind::internal, ""},
+                             {"usb0", "USB 1", kFixtureUsbRoot, VolumeKind::usb, ""},
+                             {"usb1", "USB 2", "/fixture/usb1", VolumeKind::usb, ""}});
     ASSERT_EQ(volumes.size(), 2u);
     EXPECT_TRUE(volumes[0].has_space);
     EXPECT_EQ(volumes[0].space.total, kFixtureTotal);
@@ -707,11 +707,11 @@ TEST(DiskVolumes, EmptyMountFoldersAreNotDrives)
                                {"/mnt/usb0", 255},
                                {"/mnt/usb1", 7}});
     const std::vector<Volume> volumes =
-        detect_volumes(fs, {{"internal", "Internal", "/user", VolumeKind::internal},
-                            {"ext0", "Extended", "/mnt/ext0", VolumeKind::extended},
-                            {"ext1", "Extended 2", "/mnt/ext1", VolumeKind::extended},
-                            {"usb0", "USB 1", "/mnt/usb0", VolumeKind::usb},
-                            {"usb1", "USB 2", "/mnt/usb1", VolumeKind::usb}});
+        detect_volumes(fs, {{"internal", "Internal", "/user", VolumeKind::internal, ""},
+                            {"ext0", "Extended", "/mnt/ext0", VolumeKind::extended, ""},
+                            {"ext1", "Extended 2", "/mnt/ext1", VolumeKind::extended, ""},
+                            {"usb0", "USB 1", "/mnt/usb0", VolumeKind::usb, ""},
+                            {"usb1", "USB 2", "/mnt/usb1", VolumeKind::usb, ""}});
     ASSERT_EQ(volumes.size(), 3u);
     EXPECT_EQ(volumes[0].spec.key, "internal");
     EXPECT_EQ(volumes[1].spec.key, "ext1");

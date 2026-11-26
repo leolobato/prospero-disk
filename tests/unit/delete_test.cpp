@@ -2,8 +2,10 @@
 // deleter. Copyright (C) 2026 Leonardo Lobato SPDX-License-Identifier: GPL-3.0-or-later
 
 #include "disk/cache.hpp"
+#include "disk/collection.hpp"
 #include "disk/filesystem.hpp"
 #include "disk/tree.hpp"
+#include "disk/volumes.hpp"
 
 #include <gtest/gtest.h>
 
@@ -240,6 +242,170 @@ TEST(TreeEdits, CompactedDropsRemovedNodesAndRoundTrips)
     ASSERT_TRUE(decode_cache(encode_cache(info, small), &back));
     EXPECT_EQ(back.tree->node(0).disk, 10u);
     EXPECT_EQ(back.tree->size(), 2u);
+}
+
+ProtectionRules console_rules()
+{
+    return console_protection(console_volume_specs(), {{"steam-2610", "FAKE78024"}});
+}
+
+TEST(Protection, RefusesWhatMustStay)
+{
+    const ProtectionRules rules = console_rules();
+    const auto verdict = [&](const char *path) { return check_path(rules, path).verdict; };
+    EXPECT_EQ(verdict("/user"), Verdict::volume_root);
+    EXPECT_EQ(verdict("/mnt/usb0/"), Verdict::volume_root);
+    EXPECT_EQ(verdict("/data"), Verdict::volume_root);
+    EXPECT_EQ(verdict("/system"), Verdict::protected_path);
+    EXPECT_EQ(verdict("/system_data/priv/mms/app.db"), Verdict::protected_path);
+    EXPECT_EQ(verdict("/system_ex/app"), Verdict::protected_path);
+    EXPECT_EQ(verdict("/preinst/common/font"), Verdict::protected_path);
+    EXPECT_EQ(verdict("/user/appmeta"), Verdict::protected_path);
+    EXPECT_EQ(verdict("/user/appmeta/PPSA01467/icon0.png"), Verdict::protected_path);
+    // Our own install and data, through either spelling of /data.
+    EXPECT_EQ(verdict("/data/homebrew/PPSA93475"), Verdict::protected_path);
+    EXPECT_EQ(verdict("/user/data/homebrew/PPSA93475/eboot.bin"), Verdict::protected_path);
+    EXPECT_EQ(verdict("/user/data/prospero-disk/cache"), Verdict::protected_path);
+    EXPECT_EQ(verdict("/data/homebrew/FAKE77031"), Verdict::protected_path);
+    // A folder that holds a protected one is refused whole.
+    EXPECT_EQ(verdict("/data/homebrew"), Verdict::contains_protected);
+    EXPECT_EQ(verdict("/user/data"), Verdict::volume_root); // it is /data
+    // "/user/appmetadata" is not inside "/user/appmeta".
+    EXPECT_EQ(verdict("/user/appmetadata"), Verdict::folder);
+    EXPECT_EQ(verdict("/user/home/1c9ee02b/captures"), Verdict::folder);
+    EXPECT_EQ(verdict("/user/download"), Verdict::folder);
+    EXPECT_EQ(verdict("/data/homebrew/FAKE10101"), Verdict::folder); // other homebrew
+    EXPECT_EQ(verdict("/data/../user/appmeta"), Verdict::protected_path);
+    EXPECT_EQ(verdict("relative/path"), Verdict::protected_path);
+}
+
+TEST(Protection, GamesAreUninstalledNeverDeletedByHand)
+{
+    const ProtectionRules rules = console_rules();
+    Check c = check_path(rules, "/user/app/PPSA01467");
+    EXPECT_EQ(c.verdict, Verdict::title);
+    EXPECT_EQ(c.title_id, "PPSA01467");
+    EXPECT_TRUE(c.then_delete.empty());
+    c = check_path(rules, "/mnt/ext1/user/app/CUSA01047");
+    EXPECT_EQ(c.verdict, Verdict::title);
+    EXPECT_EQ(c.title_id, "CUSA01047");
+    EXPECT_EQ(check_path(rules, "/user/app/PPSA01467/sce_sys").verdict, Verdict::title_part);
+    EXPECT_EQ(check_path(rules, "/user/app/FAKE10101").verdict, Verdict::title_part);
+    EXPECT_EQ(check_path(rules, "/user/app").verdict, Verdict::contains_titles);
+    // It holds appmeta as well as games: the first rule that refuses names it.
+    EXPECT_EQ(check_path(rules, "/mnt/ext1/user").verdict, Verdict::contains_protected);
+    EXPECT_EQ(check_path(rules, "/user/patch/PPSA01467").verdict, Verdict::title_part);
+    EXPECT_EQ(check_path(rules, "/user/patch").verdict, Verdict::contains_titles);
+    EXPECT_EQ(check_path(rules, "/mnt/ext1/user/addcont/PPSA01467").verdict, Verdict::title_part);
+}
+
+TEST(Protection, PlaydenTitleOrGameData)
+{
+    const ProtectionRules rules = console_rules();
+    // The title: uninstall it, then delete its folder.
+    Check c = check_path(rules, "/data/homebrew/FAKE78024");
+    EXPECT_EQ(c.verdict, Verdict::title);
+    EXPECT_EQ(c.title_id, "FAKE78024");
+    EXPECT_EQ(c.then_delete, std::vector<std::string>{"/data/homebrew/FAKE78024"});
+    EXPECT_EQ(check_path(rules, "/user/data/homebrew/FAKE78024").title_id, "FAKE78024");
+    EXPECT_EQ(check_path(rules, "/data/homebrew/FAKE78024/eboot.bin").verdict, Verdict::title_part);
+    // The game data: uninstall the title, delete the title and the data.
+    c = check_path(rules, "/data/playden/games/steam-2610");
+    EXPECT_EQ(c.verdict, Verdict::title);
+    EXPECT_EQ(c.title_id, "FAKE78024");
+    EXPECT_EQ(c.then_delete, (std::vector<std::string>{"/data/homebrew/FAKE78024",
+                                                       "/data/playden/games/steam-2610"}));
+    EXPECT_EQ(check_path(rules, "/mnt/usb0/playden/games/2610").title_id, "FAKE78024");
+    // A game folder Playden has no title for is plain files.
+    EXPECT_EQ(check_path(rules, "/data/playden/games/steam-1").verdict, Verdict::folder);
+    EXPECT_EQ(check_path(rules, "/data/playden/games").verdict, Verdict::contains_titles);
+    EXPECT_EQ(check_path(rules, "/data/playden").verdict, Verdict::contains_titles);
+}
+
+TEST(Protection, SpellingsOfOneFolder)
+{
+    const ProtectionRules rules = console_rules();
+    EXPECT_EQ(canonical_path(rules, "/user/data/x/"), "/data/x");
+    EXPECT_EQ(canonical_path(rules, "/user/database"), "/user/database");
+    EXPECT_EQ(path_spellings(rules, "/data/x"),
+              (std::vector<std::string>{"/data/x", "/user/data/x"}));
+    EXPECT_EQ(path_spellings(rules, "/user/x"), std::vector<std::string>{"/user/x"});
+    EXPECT_TRUE(path_within("/a/b", "/a"));
+    EXPECT_TRUE(path_within("/a", "/a"));
+    EXPECT_FALSE(path_within("/ab", "/a"));
+    EXPECT_TRUE(path_within("/a", "/"));
+}
+
+CollectedItem item(const char *key, const char *drive, std::uint64_t size)
+{
+    CollectedItem i;
+    i.key = key;
+    i.path = key;
+    i.drive = drive;
+    i.drive_name = drive;
+    i.size = size;
+    return i;
+}
+
+TEST(CollectionModel, NestingAndTotalsByDrive)
+{
+    Collection c;
+    EXPECT_TRUE(c.add(item("/user/home/1/captures/a.mp4", "internal", 5)));
+    EXPECT_TRUE(c.add(item("/user/download", "internal", 30)));
+    EXPECT_TRUE(c.add(item("/mnt/usb0/backup.tar", "usb0", 50)));
+    // A folder takes in the items inside it.
+    EXPECT_TRUE(c.add(item("/user/home/1/captures", "internal", 40)));
+    EXPECT_EQ(c.size(), 3u);
+    EXPECT_EQ(c.find("/user/home/1/captures/a.mp4"), nullptr);
+    // Inside a collected folder nothing more can be added.
+    EXPECT_FALSE(c.add(item("/user/home/1/captures/b.mp4", "internal", 1)));
+    EXPECT_FALSE(c.add(item("/user/download", "internal", 30)));
+    EXPECT_NE(c.covering("/user/home/1/captures/b.mp4"), nullptr);
+    EXPECT_EQ(c.covering("/user/home/1/capturesX"), nullptr);
+    EXPECT_EQ(c.total(), 120u);
+
+    const std::vector<DriveTotal> drives = c.drives();
+    ASSERT_EQ(drives.size(), 2u);
+    EXPECT_EQ(drives[0].drive, "internal");
+    EXPECT_EQ(drives[0].size, 70u);
+    EXPECT_EQ(drives[0].count, 2u);
+    EXPECT_EQ(drives[1].size, 50u);
+
+    const auto sorted = c.sorted();
+    ASSERT_EQ(sorted.size(), 3u);
+    EXPECT_EQ(sorted[0]->key, "/user/home/1/captures");
+    EXPECT_EQ(sorted[1]->key, "/user/download");
+    EXPECT_EQ(sorted[2]->key, "/mnt/usb0/backup.tar");
+
+    EXPECT_TRUE(c.remove("/user/download"));
+    EXPECT_FALSE(c.remove("/user/download"));
+    c.retain(
+        [](CollectedItem &i)
+        {
+            i.size = 1;
+            return i.drive == "usb0";
+        });
+    ASSERT_EQ(c.size(), 1u);
+    EXPECT_EQ(c.total(), 1u);
+}
+
+TEST(CollectionModel, OneFolderSeenFromTwoVolumesCountsOnce)
+{
+    const ProtectionRules rules = console_rules();
+    Collection c;
+    CollectedItem from_data = item("", "internal", 10);
+    from_data.key = canonical_path(rules, "/data/backups");
+    from_data.path = "/data/backups";
+    CollectedItem from_user = item("", "internal", 10);
+    from_user.key = canonical_path(rules, "/user/data/backups");
+    from_user.path = "/user/data/backups";
+    EXPECT_TRUE(c.add(from_data));
+    EXPECT_FALSE(c.add(from_user));
+    EXPECT_EQ(c.total(), 10u);
+    EXPECT_EQ(c.drives().size(), 1u);
+    // The two console volumes are one drive.
+    const std::vector<VolumeSpec> specs = console_volume_specs();
+    EXPECT_EQ(drive_of(specs[0]), drive_of(specs[1]));
 }
 
 } // namespace

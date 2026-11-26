@@ -72,13 +72,13 @@ std::vector<VolumeSpec> console_volume_specs()
     // /data is not listed: on the console it is a nullfs view of /user/data, so it
     // would repeat Internal's disk bar and count files a scan of /user already counts.
     std::vector<VolumeSpec> specs = {
-        {"internal", "Internal", "/user", VolumeKind::internal},
-        {"ext0", "Extended", "/mnt/ext0", VolumeKind::extended},
-        {"ext1", "Extended 2", "/mnt/ext1", VolumeKind::extended},
+        {"internal", "Internal", "/user", VolumeKind::internal, ""},
+        {"ext0", "Extended", "/mnt/ext0", VolumeKind::extended, ""},
+        {"ext1", "Extended 2", "/mnt/ext1", VolumeKind::extended, ""},
     };
     for (int i = 0; i < 8; ++i)
         specs.push_back({"usb" + std::to_string(i), "USB " + std::to_string(i + 1),
-                         "/mnt/usb" + std::to_string(i), VolumeKind::usb});
+                         "/mnt/usb" + std::to_string(i), VolumeKind::usb, ""});
     return specs;
 }
 
@@ -99,6 +99,42 @@ std::vector<Volume> detect_volumes(const FileSystem &fs, const std::vector<Volum
         out.push_back(v);
     }
     return out;
+}
+
+ProtectionRules console_protection(const std::vector<VolumeSpec> &specs,
+                                   std::map<std::string, std::string> playden_titles)
+{
+    ProtectionRules rules;
+    for (const VolumeSpec &spec : specs)
+        rules.volume_roots.push_back(spec.path);
+    const std::string system = "Part of the console's system: it must stay.";
+    const std::string meta = "The console's game information: it must stay.";
+    const std::string own = "Prospero Disk's own files can't be collected.";
+    rules.protected_roots = {
+        {"/system*", system},
+        {"/preinst", system},
+        {"/user/appmeta", meta},
+        {"/mnt/ext0/user/appmeta", meta},
+        {"/mnt/ext1/user/appmeta", meta},
+        {"/data/homebrew/PPSA93475", own},
+        {"/data/prospero-disk", own},
+        {"/data/homebrew/FAKE77031", "Uninstall Playden from its own settings."},
+    };
+    rules.title_parents = {"/user/app", "/mnt/ext0/user/app", "/mnt/ext1/user/app"};
+    rules.title_companions = {"/user/patch",          "/user/addcont",
+                              "/mnt/ext0/user/patch", "/mnt/ext0/user/addcont",
+                              "/mnt/ext1/user/patch", "/mnt/ext1/user/addcont"};
+    rules.aliases = {{"/user/data", "/data"}};
+    rules.homebrew = "/data/homebrew";
+    rules.playden_game_folders = {"/data/playden/games"};
+    for (const VolumeSpec &spec : specs)
+        if (spec.path != "/data")
+        {
+            rules.playden_game_folders.push_back(spec.path + "/playden/games");
+            rules.playden_game_folders.push_back(spec.path + "/playden-games");
+        }
+    rules.playden_titles = std::move(playden_titles);
+    return rules;
 }
 
 int default_threads(VolumeKind kind)
@@ -125,6 +161,7 @@ Environment make_environment()
     // /data needs the elevation; without it the title keeps its own storage.
     env.cache_dir =
         env.elevation.granted ? "/data/prospero-disk/cache" : "/download0/prospero-disk/cache";
+    env.protection = console_protection(env.specs, env.playden_titles);
 #else
     const char *volumes = std::getenv("PD_VOLUMES");
     if (volumes != nullptr && volumes[0] != 0)
@@ -139,15 +176,25 @@ Environment make_environment()
             env.app_db = db;
         if (const char *homebrew = std::getenv("PD_HOMEBREW"); homebrew != nullptr)
             env.playden_titles = read_playden_titles(*env.fs, homebrew);
+        // Folders named on a PC: only the volumes themselves are refused.
+        for (const VolumeSpec &spec : env.specs)
+            env.protection.volume_roots.push_back(spec.path);
     }
     else
     {
         // Paced by the screen's clock, so the tour photographs a scan in progress.
         env.fs = make_fixture_filesystem(45.0);
-        env.specs = {{"internal", "Internal", kFixtureRoot, VolumeKind::internal},
-                     {"usb0", "USB 1", kFixtureUsbRoot, VolumeKind::usb}};
+        env.specs = {{"internal", "Internal", kFixtureRoot, VolumeKind::internal, ""},
+                     {"usb0", "USB 1", kFixtureUsbRoot, VolumeKind::usb, ""}};
         env.appmeta_roots = {std::string(kFixtureRoot) + "/appmeta"};
         env.fixture = true;
+        // The console's rules on the fixture's layout.
+        const std::string root = kFixtureRoot;
+        env.protection.volume_roots = {kFixtureRoot, kFixtureUsbRoot};
+        env.protection.protected_roots = {
+            {root + "/appmeta", "The console's game information: it must stay."}};
+        env.protection.title_parents = {root + "/app"};
+        env.protection.title_companions = {root + "/patch"};
     }
 #endif
     return env;
