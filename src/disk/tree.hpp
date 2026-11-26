@@ -27,6 +27,7 @@ enum NodeFlag : std::uint8_t
 {
     kUnreadable = 1, // the folder could not be listed; its size is unknown
     kListed = 2,     // the folder has been listed (its files are counted)
+    kRemoved = 4,    // deleted: detached from its parent, dropped by compacted()
 };
 
 // One folder, one kept file, or one roll-up of a folder's other files. The
@@ -84,6 +85,21 @@ class Tree
     std::string path(std::uint32_t index) const;
     std::vector<std::uint32_t> children(std::uint32_t index) const;
     int depth(std::uint32_t index) const;
+    // The node at a full path ("/user/app/PPSA00001"); kNoNode when the tree
+    // has no such node. The root is the tree's own path.
+    std::uint32_t find(std::string_view path) const;
+
+    // Detaches a node (never the root) from its parent and subtracts its
+    // totals from every ancestor: what a deletion freed leaves the picture at
+    // once. The node stays in the arena, flagged kRemoved, until compacted().
+    void remove(std::uint32_t index);
+    // Puts subtree (a scan of the same folder, its root named by that path) in
+    // place of index: what is left of a folder that was only partly deleted.
+    // Returns the new node of that folder.
+    std::uint32_t replace(std::uint32_t index, const Tree &subtree);
+    // A copy without the removed nodes, for the cache file.
+    Tree compacted() const;
+
     // The child of ancestor on the way to index (index itself when it is a
     // child); kNoNode when ancestor is not above index.
     std::uint32_t child_towards(std::uint32_t ancestor, std::uint32_t index) const;

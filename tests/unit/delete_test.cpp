@@ -1,7 +1,9 @@
 // Prospero Disk - Tests for collect and delete: removal, the tree edits, the collection, the
 // deleter. Copyright (C) 2026 Leonardo Lobato SPDX-License-Identifier: GPL-3.0-or-later
 
+#include "disk/cache.hpp"
 #include "disk/filesystem.hpp"
+#include "disk/tree.hpp"
 
 #include <gtest/gtest.h>
 
@@ -159,6 +161,85 @@ TEST(FixtureRemoval, UsbSpaceIsItsOwn)
     ASSERT_TRUE(fs->space(usb, &usb_after));
     EXPECT_EQ(internal_after.used, internal_before.used);
     EXPECT_EQ(usb_before.used - usb_after.used, backup.disk);
+}
+
+// /v: a/ (b.bin 100, c/ (d.bin 50)), e.bin 10
+Tree sample()
+{
+    Tree tree("/v");
+    const std::uint32_t a = tree.add_child(0, "a", Kind::directory);
+    tree.add_totals(0, 0, 0, 0, 1); // the root counts a
+    tree.add_totals(tree.add_child(a, "b.bin", Kind::file), 100, 90, 1, 0);
+    const std::uint32_t c = tree.add_child(a, "c", Kind::directory);
+    tree.add_totals(a, 0, 0, 0, 1); // a and the root count c
+    tree.add_totals(tree.add_child(c, "d.bin", Kind::file), 50, 40, 1, 0);
+    tree.add_totals(tree.add_child(0, "e.bin", Kind::file), 10, 9, 1, 0);
+    return tree;
+}
+
+TEST(TreeEdits, FindsByPath)
+{
+    const Tree tree = sample();
+    EXPECT_EQ(tree.find("/v"), 0u);
+    EXPECT_EQ(tree.path(tree.find("/v/a/c/d.bin")), "/v/a/c/d.bin");
+    EXPECT_EQ(tree.find("/v/a/x"), kNoNode);
+    EXPECT_EQ(tree.find("/vv/a"), kNoNode);
+    EXPECT_EQ(tree.find("/w"), kNoNode);
+    Tree slash("/");
+    const std::uint32_t data = slash.add_child(0, "data", Kind::directory);
+    EXPECT_EQ(slash.find("/data"), data);
+}
+
+TEST(TreeEdits, RemoveSubtractsUpThePath)
+{
+    Tree tree = sample();
+    const std::uint32_t c = tree.find("/v/a/c");
+    tree.remove(c);
+    EXPECT_EQ(tree.find("/v/a/c"), kNoNode);
+    const Node &a = tree.node(tree.find("/v/a"));
+    EXPECT_EQ(a.disk, 100u);
+    EXPECT_EQ(a.files, 1u);
+    EXPECT_EQ(a.folders, 0u);
+    EXPECT_EQ(tree.node(0).disk, 110u);
+    EXPECT_EQ(tree.node(0).folders, 1u);
+    EXPECT_EQ(tree.node(0).files, 2u);
+    tree.remove(c); // twice changes nothing
+    EXPECT_EQ(tree.node(0).disk, 110u);
+    tree.remove(0); // never the root
+    EXPECT_EQ(tree.node(0).disk, 110u);
+}
+
+TEST(TreeEdits, ReplaceGraftsWhatIsLeft)
+{
+    Tree tree = sample();
+    Tree left("/v/a");
+    const std::uint32_t c = left.add_child(0, "c", Kind::directory);
+    left.add_totals(0, 0, 0, 0, 1);
+    left.add_totals(left.add_child(c, "d.bin", Kind::file), 50, 40, 1, 0);
+    const std::uint32_t a = tree.replace(tree.find("/v/a"), left);
+    ASSERT_NE(a, kNoNode);
+    EXPECT_EQ(tree.find("/v/a"), a);
+    EXPECT_EQ(tree.find("/v/a/b.bin"), kNoNode);
+    EXPECT_NE(tree.find("/v/a/c/d.bin"), kNoNode);
+    EXPECT_EQ(tree.node(0).disk, 60u);
+    EXPECT_EQ(tree.node(0).files, 2u);
+    EXPECT_EQ(tree.node(0).folders, 2u);
+}
+
+TEST(TreeEdits, CompactedDropsRemovedNodesAndRoundTrips)
+{
+    Tree tree = sample();
+    tree.remove(tree.find("/v/a"));
+    const Tree small = tree.compacted();
+    EXPECT_EQ(small.size(), 2u);
+    EXPECT_EQ(small.node(0).disk, 10u);
+    EXPECT_NE(small.find("/v/e.bin"), kNoNode);
+    CacheInfo info;
+    info.volume_key = "v";
+    CachedScan back;
+    ASSERT_TRUE(decode_cache(encode_cache(info, small), &back));
+    EXPECT_EQ(back.tree->node(0).disk, 10u);
+    EXPECT_EQ(back.tree->size(), 2u);
 }
 
 } // namespace
