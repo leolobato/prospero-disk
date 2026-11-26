@@ -1,5 +1,6 @@
-// Prospero Disk - Tests for collect and delete: removal, the tree edits, the collection, the
-// deleter. Copyright (C) 2026 Leonardo Lobato SPDX-License-Identifier: GPL-3.0-or-later
+// Prospero Disk - Tests for collect and delete: removal, tree edits, collection, deleter.
+// Copyright (C) 2026 Leonardo Lobato
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 #include "disk/cache.hpp"
 #include "disk/collection.hpp"
