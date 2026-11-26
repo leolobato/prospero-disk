@@ -5,6 +5,7 @@
 #pragma once
 
 #include "disk/collection.hpp"
+#include "disk/deleter.hpp"
 #include "disk/filesystem.hpp"
 
 #include <cstdint>
@@ -76,6 +77,7 @@ struct Environment
     // Playden's games: install id (steam-2610) -> its PS5 title (FAKE78024).
     std::map<std::string, std::string> playden_titles;
     ProtectionRules protection; // what may be collected (docs/plans/collect-delete.md)
+    Privileged privileged;      // raises the euid for one removal; empty off the console
     std::string cache_dir;      // empty: no cache
     Elevation elevation;
     bool fixture = false;
@@ -92,5 +94,6 @@ ProtectionRules console_protection(const std::vector<VolumeSpec> &specs,
 
 // Set once by main() on the console, before the first design is created.
 void set_elevation(const Elevation &elevation);
+void set_privileged(Privileged privileged);
 
 } // namespace hui::disk

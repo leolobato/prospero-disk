@@ -7,6 +7,7 @@
 #include "disk/titles.hpp"
 
 #include <cstdlib>
+#include <utility>
 
 namespace hui::disk
 {
@@ -17,6 +18,12 @@ namespace
 Elevation &elevation_state()
 {
     static Elevation state;
+    return state;
+}
+
+Privileged &privileged_state()
+{
+    static Privileged state;
     return state;
 }
 
@@ -147,6 +154,11 @@ void set_elevation(const Elevation &elevation)
     elevation_state() = elevation;
 }
 
+void set_privileged(Privileged privileged)
+{
+    privileged_state() = std::move(privileged);
+}
+
 Environment make_environment()
 {
     Environment env;
@@ -162,6 +174,7 @@ Environment make_environment()
     env.cache_dir =
         env.elevation.granted ? "/data/prospero-disk/cache" : "/download0/prospero-disk/cache";
     env.protection = console_protection(env.specs, env.playden_titles);
+    env.privileged = privileged_state();
 #else
     const char *volumes = std::getenv("PD_VOLUMES");
     if (volumes != nullptr && volumes[0] != 0)

@@ -40,6 +40,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
+#include <functional>
 #include <memory>
 #include <span>
 #include <string>
@@ -311,6 +312,31 @@ int main()
         sys::sleep_us(1000000);
     }
     disk::set_elevation(elevation);
+    if (elevation.granted)
+    {
+        // Removing an entry needs its folder's owner, and users' folders are
+        // root's (docs/platform/CONSOLE_NOTES.md section 4): the deleter raises
+        // the euid for one call at a time, after the app's own user was
+        // refused. The euid is per process, so the screen starts no file
+        // writes while a deletion runs.
+        disk::set_privileged(
+            [original_uid](const std::function<bool()> &call)
+            {
+                if (seteuid(0) != 0)
+                    return false;
+                const bool ok = call();
+                const int error = errno;
+                if (seteuid(original_uid) != 0)
+                {
+                    // Anything after this would run as root: stop this thread.
+                    sys::log("[HUI] fatal: effective uid restore failed after a removal (%d)",
+                             errno);
+                    sys::park();
+                }
+                errno = error;
+                return ok;
+            });
+    }
     sys::log("[HUI] elevation %s after %lld ms, euid %d", elevation.diagnostic.c_str(),
              static_cast<long long>((sys::monotonic_us() - started_us) / 1000),
              static_cast<int>(geteuid()));
