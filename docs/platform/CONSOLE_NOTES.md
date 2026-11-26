@@ -91,6 +91,20 @@ path works (a real directory descriptor gives EINVAL).
   other thread runs, or files that other threads create become root's.
 - `/data` drops the sticky bit (1777 reads back as 0777). `/data` is a nullfs
   view of `/user/data`: the same disk and the same free space.
+- **Removing needs the folder's owner [seen here, write probe 2026-11-26].**
+  Creating or removing an entry is allowed to the owner of the folder it is
+  in, or to anyone when the folder is 0777, and to nobody else: root cannot
+  remove a file in a 0755 or 0700 folder that uid 1 owns, and uid 1 cannot in
+  a root folder. The file's own owner does not matter.
+- Who owns what (13.60): `/data`, `/user/data`, `/user/home/<id>` and most of
+  what is in it, `/user/download` (0700, so uid 1 cannot even list it),
+  `/user/app/*` (0755), `/mnt/ext1` and `/mnt/ext1/user/app/*` (0770) are
+  root's. Playden's game folders and titles (`/data/playden/games/*`,
+  `/data/homebrew/FAKE78xxx`) are uid 1's. An exFAT USB drive has no owners
+  (uid -1, 0777): anyone may create and remove. The probe is
+  `src/platform/ps5/write_probe.cpp`; it runs once when
+  `/data/homebrew/PPSA93475/dev/write-probe` exists and no
+  `/data/prospero-disk/write-probe.txt` does.
 
 ## 5. Threads, files, mounts
 

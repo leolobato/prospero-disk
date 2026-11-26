@@ -90,6 +90,17 @@ and the trigger file, launch once, read the log and the report, close. About
 - Neither → those locations are refused at collect time ("Prospero Disk
   cannot delete here"), and I report back before building the UI.
 
+**Run 1 result (2026-11-26, 13.60; CONSOLE_NOTES §4).** Only the folder's
+owner may remove what is in it (or anyone, in a 0777 folder); root has no
+bypass. Users' folders are root's, Playden's are uid 1's, exFAT USB has no
+owners. So neither euid alone can delete everything: the deleter tries each
+call (list, `lstat`, `unlink`, `rmdir`) as the app's user and, on `EACCES` or
+`EPERM`, once more with the euid raised to 0, restored at once. **Run 2** is
+therefore needed. (Launching first needed a ShadowMountPlus restart for a stale
+mount left by an earlier title, with the owner's go-ahead. The probe left one
+root-owned scratch folder in `/user/download`, which it could not see as uid 1;
+it was removed over FTP. The quit request closed the app cleanly.)
+
 ## 3. The model and the deleter (pure, tested on the PC)
 
 **`FileSystem` gains** `remove_file(path, &error)` and
