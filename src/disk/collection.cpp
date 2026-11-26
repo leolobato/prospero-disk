@@ -123,8 +123,11 @@ Check check_path(const ProtectionRules &rules, std::string_view raw)
     for (const std::string &root : rules.volume_roots)
         if (path == canonical_path(rules, root))
             return refuse(Verdict::volume_root, "A whole drive can't be collected.");
+    // A path the system would read differently from these rules: "..", ".",
+    // empty components ("a//b" is "a/b" to the kernel) or a NUL inside.
     if (path.empty() || path.front() != '/' || path.find("/../") != std::string::npos ||
-        path.find("/./") != std::string::npos || path.ends_with("/..") || path.ends_with("/."))
+        path.find("/./") != std::string::npos || path.ends_with("/..") || path.ends_with("/.") ||
+        path.find("//") != std::string::npos || path.find('\0') != std::string::npos)
         return refuse(Verdict::protected_path, "That path can't be collected.");
 
     for (const ProtectedRoot &root : rules.protected_roots)
@@ -185,11 +188,18 @@ Check check_path(const ProtectionRules &rules, std::string_view raw)
         if (path_within(games, path))
             return refuse(Verdict::contains_titles,
                           "It holds Playden games: collect them one at a time.");
-        if (!path_within(path, games) || parent != games)
+        if (!path_within(path, games) || path == games)
             continue;
-        const auto it = rules.playden_titles.find(playden_install_id(parent, name));
+        // The game folder is the first name below the games folder.
+        const std::string_view game = child_below(path, games);
+        const auto it = rules.playden_titles.find(playden_install_id(games, game));
         if (it == rules.playden_titles.end())
             continue; // no title of its own: plain files
+        if (!playden_title(it->second))
+            return refuse(Verdict::title_part, "Uninstall this game from Playden.");
+        if (parent != games)
+            return refuse(Verdict::title_part,
+                          "Part of a Playden game: collect the game to uninstall it.");
         Check c;
         c.verdict = Verdict::title;
         c.title_id = it->second;

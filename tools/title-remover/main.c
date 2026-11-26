@@ -16,7 +16,7 @@
 // (FAKE78 and three digits), never Prospero Disk itself. The answer goes next
 // to the request, written as that user:
 //
-//   result    "nonce=<nonce>\ncode=<8 hex digits>\n"   (code 0 = accepted)
+//   result    "title=<id>\nnonce=<nonce>\ncode=<8 hex digits>\n"   (code 0 = accepted)
 //
 // The uninstall finishes asynchronously; the app confirms it in app.db.
 // Order matters (Playden, results/20261007-native-uninstall): initialize
@@ -77,12 +77,14 @@ static int field(const char *text, const char *key, char *value, size_t size) {
   return 0;
 }
 
-static void write_result(uid_t owner, const char *nonce, unsigned code) {
+static void write_result(uid_t owner, const char *title, const char *nonce, unsigned code) {
   // As the app's user, so the answer sits in its folder like the request.
   kernel_set_ucred_uid(-1, owner);
-  char text[128];
-  const int length = snprintf(text, sizeof text, "nonce=%s\ncode=%08x\n", nonce, code);
-  const int fd = open(REQUEST_DIR "/result.tmp", O_WRONLY | O_CREAT | O_TRUNC | O_NOFOLLOW, 0666);
+  char text[160];
+  const int length = snprintf(text, sizeof text, "title=%s\nnonce=%s\ncode=%08x\n", title, nonce, code);
+  // A file of our own, made here: never one someone left in the folder.
+  unlink(REQUEST_DIR "/result.tmp");
+  const int fd = open(REQUEST_DIR "/result.tmp", O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW, 0666);
   if (fd < 0) return;
   fchmod(fd, 0666);
   const int written = (int)write(fd, text, (size_t)length) == length;
@@ -96,13 +98,16 @@ int main(void) {
   struct stat folder;
   if (lstat(REQUEST_DIR, &folder) != 0 || !S_ISDIR(folder.st_mode) || folder.st_uid == 0) return 1;
   const uid_t owner = folder.st_uid;
-  struct stat request;
-  if (lstat(REQUEST_DIR "/request", &request) != 0 || !S_ISREG(request.st_mode) || request.st_uid != owner ||
-      request.st_nlink != 1 || request.st_size <= 0 || request.st_size >= 256)
-    return 2;
+  // The checks are on the file that was opened, not on the name before it.
   char text[256] = {0};
   const int fd = open(REQUEST_DIR "/request", O_RDONLY | O_NOFOLLOW);
   if (fd < 0) return 3;
+  struct stat request;
+  if (fstat(fd, &request) != 0 || !S_ISREG(request.st_mode) || request.st_uid != owner ||
+      request.st_nlink != 1 || request.st_size <= 0 || request.st_size >= 256) {
+    close(fd);
+    return 2;
+  }
   const ssize_t count = read(fd, text, sizeof text - 1);
   close(fd);
   if (count <= 0) return 3;
@@ -115,6 +120,6 @@ int main(void) {
     kernel_set_ucred_authid(-1, AUTHID_INSTALLER);
     code = (unsigned)sceAppInstUtilAppUnInstall(title);
   }
-  write_result(owner, nonce, code);
+  write_result(owner, title, nonce, code);
   return code == 0 ? 0 : 5;
 }

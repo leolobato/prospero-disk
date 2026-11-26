@@ -30,8 +30,9 @@ using Privileged = std::function<bool(const std::function<bool()> &call)>;
 
 struct UninstallResult
 {
-    bool ok = false;
-    std::string reason; // why not, for the result screen
+    bool ok = false;       // the system confirmed the title is gone
+    bool accepted = false; // the system took the request (it may still be working)
+    std::string reason;    // why not, for the result screen
 };
 
 // Uninstalls a title through the system (docs/plans/collect-delete.md,
@@ -82,6 +83,7 @@ struct ItemResult
     std::string error_path;  // where it happened
     std::string reason;      // a title's uninstall failure, or a refused path
     std::size_t failures = 0;
+    std::size_t removed = 0; // entries removed, whatever their size (an empty file is 0 bytes)
     // Outcome::partly: a scan of what is left of the item's folder.
     std::unique_ptr<Tree> left;
 };
@@ -130,7 +132,16 @@ class Deleter
     void delete_item(const DeleteJob &job, ItemResult &result);
     void delete_title(const DeleteJob &job, ItemResult &result);
     // Removes path and everything under it; true when it is gone.
-    bool remove_tree(const std::string &path, const std::string &volume_root, ItemResult &result);
+    // What the collection said the item was: a folder is never emptied when
+    // a file was collected, and the reverse.
+    enum class Expect : std::uint8_t
+    {
+        any,
+        folder,
+        file,
+    };
+    bool remove_tree(const std::string &path, const std::string &volume_root, Expect expect,
+                     ItemResult &result);
     bool checked_ancestors(const std::string &path, const std::string &volume_root,
                            ItemResult &result);
     bool stat(const std::string &path, Entry *out, int *error) const;

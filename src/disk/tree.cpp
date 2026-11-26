@@ -228,6 +228,15 @@ bool Tree::adopt(std::vector<Node> nodes, std::string pool)
             return false;
         if (n.kind > Kind::other_files)
             return false;
+        // A name the scanner could have read: one path component, no NUL.
+        if (i > 0)
+        {
+            const std::string_view name = std::string_view(pool).substr(n.name, n.name_size);
+            if (name.empty() || name == "." || name == ".." ||
+                name.find('/') != std::string_view::npos ||
+                name.find('\0') != std::string_view::npos)
+                return false;
+        }
         // Links point only to existing nodes, and a parent always comes
         // before its children: that rules out cycles.
         if (i > 0 && (n.parent == kNoNode || n.parent >= i))

@@ -231,6 +231,22 @@ TEST(TreeEdits, ReplaceGraftsWhatIsLeft)
     EXPECT_EQ(tree.node(0).folders, 2u);
 }
 
+TEST(TreeEdits, AdoptRefusesNamesAScanCannotHave)
+{
+    for (const std::string &bad : {std::string("a/b"), std::string(".."), std::string("."),
+                                   std::string(""), std::string("a\0b", 3)})
+    {
+        Tree tree("/v");
+        tree.add_child(0, bad, Kind::directory);
+        Tree copy;
+        EXPECT_FALSE(copy.adopt(tree.nodes(), tree.pool())) << bad;
+    }
+    Tree fine("/v");
+    fine.add_child(0, "ok", Kind::directory);
+    Tree copy;
+    EXPECT_TRUE(copy.adopt(fine.nodes(), fine.pool()));
+}
+
 TEST(TreeEdits, CompactedDropsRemovedNodesAndRoundTrips)
 {
     Tree tree = sample();
@@ -281,6 +297,11 @@ TEST(Protection, RefusesWhatMustStay)
     EXPECT_EQ(verdict("/data/homebrew/FAKE10101"), Verdict::folder); // other homebrew
     EXPECT_EQ(verdict("/data/../user/appmeta"), Verdict::protected_path);
     EXPECT_EQ(verdict("relative/path"), Verdict::protected_path);
+    // The kernel reads "a//b" as "a/b", and stops at a NUL: such paths never
+    // pass the rules.
+    EXPECT_EQ(verdict("/user//appmeta"), Verdict::protected_path);
+    EXPECT_EQ(check_path(rules, std::string_view("/user/appmeta\0x", 15)).verdict,
+              Verdict::protected_path);
 }
 
 TEST(Protection, GamesAreUninstalledNeverDeletedByHand)
@@ -324,6 +345,9 @@ TEST(Protection, PlaydenTitleOrGameData)
     EXPECT_EQ(c.then_delete, (std::vector<std::string>{"/data/homebrew/FAKE78024",
                                                        "/data/playden/games/steam-2610"}));
     EXPECT_EQ(check_path(rules, "/mnt/usb0/playden/games/2610").title_id, "FAKE78024");
+    // Inside a game with a title: refused, collect the game.
+    EXPECT_EQ(check_path(rules, "/data/playden/games/steam-2610/drive_c").verdict,
+              Verdict::title_part);
     // A game folder Playden has no title for is plain files.
     EXPECT_EQ(check_path(rules, "/data/playden/games/steam-1").verdict, Verdict::folder);
     EXPECT_EQ(check_path(rules, "/data/playden/games").verdict, Verdict::contains_titles);
@@ -494,6 +518,46 @@ TEST_F(PosixDeleter, KeepsGoingPastWhatItCannotRemove)
     EXPECT_EQ(results[0].left->node(0).files, 1u);
 }
 
+TEST_F(PosixDeleter, AFileThatBecameAFolderIsNotEmptied)
+{
+    folder("v");
+    folder("v/thing");
+    write("v/thing/keep.bin");
+    const auto fs = make_posix_filesystem(true, true);
+    DeleteOptions options;
+    options.rules.volume_roots = {path("v")};
+    DeleteJob job = folder_job(path("v/thing"), path("v"));
+    job.item.kind = ItemKind::file; // collected when it was a file
+    options.jobs = {job};
+    const auto results = run(*fs, std::move(options));
+    ASSERT_EQ(results.size(), 1u);
+    EXPECT_EQ(results[0].outcome, Outcome::failed);
+    EXPECT_EQ(results[0].error, ESTALE);
+    EXPECT_TRUE(exists("v/thing/keep.bin"));
+}
+
+TEST_F(PosixDeleter, AnEmptyFileRemovedCountsAsPartly)
+{
+    if (geteuid() == 0)
+        GTEST_SKIP() << "root ignores folder permissions here";
+    folder("v");
+    folder("v/item");
+    folder("v/item/locked");
+    write("v/item/locked/stays.bin");
+    write("v/item/empty.txt", 0);
+    ASSERT_EQ(chmod(path("v/item/locked").c_str(), 0555), 0);
+    const auto fs = make_posix_filesystem(true, true);
+    DeleteOptions options;
+    options.rules.volume_roots = {path("v")};
+    options.jobs = {folder_job(path("v/item"), path("v"))};
+    const auto results = run(*fs, std::move(options));
+    ASSERT_EQ(results.size(), 1u);
+    EXPECT_FALSE(exists("v/item/empty.txt"));
+    // Something was removed, so the picture is rescanned: not "failed".
+    EXPECT_EQ(results[0].outcome, Outcome::partly);
+    EXPECT_NE(results[0].left, nullptr);
+}
+
 TEST_F(PosixDeleter, RefusesAPathThroughALink)
 {
     folder("v");
@@ -570,8 +634,92 @@ TEST(FixtureDeleter, FreesSpaceSkipsMountsAndRechecksTheRules)
     EXPECT_TRUE(fs->stat(root + "/app", &gone));
 }
 
-// Refuses removal with EACCES until the euid is "raised", like a root-owned
-// folder on the console.
+// Changes what the console would: one folder's mount name can't be read, and
+// one folder is listed with an identity it no longer has.
+class TrickyFileSystem final : public FileSystem
+{
+  public:
+    explicit TrickyFileSystem(const FileSystem &inner) : inner_(inner)
+    {
+    }
+    bool list(const std::string &p, std::vector<Entry> *out, int *error) const override
+    {
+        if (!inner_.list(p, out, error))
+            return false;
+        for (Entry &e : *out)
+            if (p + "/" + e.name == swapped)
+                e.inode += 100000; // listed as one folder, found as another
+        return true;
+    }
+    bool stat(const std::string &p, Entry *out) const override
+    {
+        return inner_.stat(p, out);
+    }
+    bool space(const std::string &p, SpaceInfo *out) const override
+    {
+        return inner_.space(p, out);
+    }
+    bool read_file(const std::string &p, std::string *out, std::size_t max) const override
+    {
+        return inner_.read_file(p, out, max);
+    }
+    bool mount_point(const std::string &p, std::string *out) const override
+    {
+        if (p == unnamed)
+            return false;
+        return inner_.mount_point(p, out);
+    }
+    bool remove_file(const std::string &p, int *error) const override
+    {
+        return inner_.remove_file(p, error);
+    }
+    bool remove_folder(const std::string &p, int *error) const override
+    {
+        return inner_.remove_folder(p, error);
+    }
+    std::string swapped;
+    std::string unnamed;
+
+  private:
+    const FileSystem &inner_;
+};
+
+TEST(FixtureDeleter, AFolderChangedAfterListingIsNotEntered)
+{
+    const auto inner = make_fixture_filesystem();
+    TrickyFileSystem fs(*inner);
+    const std::string root = kFixtureRoot;
+    fs.swapped = root + "/home/10000000/captures";
+    DeleteOptions options;
+    options.rules = fixture_rules();
+    options.jobs = {folder_job(root + "/home", root)};
+    const auto results = run(fs, std::move(options));
+    ASSERT_EQ(results.size(), 1u);
+    EXPECT_EQ(results[0].outcome, Outcome::partly);
+    EXPECT_EQ(results[0].error, ESTALE);
+    Entry e;
+    EXPECT_TRUE(fs.stat(root + "/home/10000000/captures/clip_000.mp4", &e));
+    EXPECT_FALSE(fs.stat(root + "/home/10000000/trophy", &e));
+}
+
+TEST(FixtureDeleter, AFolderWhoseMountCantBeReadIsLeftAlone)
+{
+    const auto inner = make_fixture_filesystem();
+    TrickyFileSystem fs(*inner);
+    const std::string root = kFixtureRoot;
+    fs.unnamed = root + "/home/10000000/trophy";
+    DeleteOptions options;
+    options.rules = fixture_rules();
+    options.jobs = {folder_job(root + "/home", root)};
+    const auto results = run(fs, std::move(options));
+    ASSERT_EQ(results.size(), 1u);
+    EXPECT_EQ(results[0].outcome, Outcome::partly);
+    EXPECT_EQ(results[0].error, EXDEV);
+    Entry e;
+    EXPECT_TRUE(fs.stat(root + "/home/10000000/trophy/t0000.dat", &e));
+    EXPECT_FALSE(fs.stat(root + "/home/10000000/captures", &e));
+}
+
 // The console's case: two file systems that both report st_dev 0. Only the
 // mount names tell that one is mounted inside the other.
 class SameDeviceFileSystem final : public FileSystem
@@ -636,6 +784,24 @@ TEST(FixtureDeleter, MountNamesTellMountsApartWhenDevicesDoNot)
     EXPECT_TRUE(fs.stat(root + "/mnt_other/huge/elsewhere.bin", &still));
 }
 
+TEST(FixtureDeleter, SelectionBelowAMountOnTheSameDeviceIsRefused)
+{
+    const auto inner = make_fixture_filesystem();
+    SameDeviceFileSystem fs(*inner);
+    const std::string root = kFixtureRoot;
+    DeleteOptions options;
+    options.rules = fixture_rules();
+    options.jobs = {folder_job(root + "/mnt_other/huge", root)};
+    const auto results = run(fs, std::move(options));
+    ASSERT_EQ(results.size(), 1u);
+    EXPECT_EQ(results[0].outcome, Outcome::failed);
+    EXPECT_EQ(results[0].error, EXDEV);
+    Entry still;
+    EXPECT_TRUE(fs.stat(root + "/mnt_other/huge/elsewhere.bin", &still));
+}
+
+// Refuses removal with EACCES until the euid is "raised", like a root-owned
+// folder on the console.
 class OwnedFileSystem final : public FileSystem
 {
   public:
@@ -897,7 +1063,7 @@ TEST_F(PayloadClient, SendsTheRequestAndReadsTheAnswer)
         const std::size_t at = request.find("nonce=");
         const std::string nonce = request.substr(at + 6, request.find('\n', at) - at - 6);
         std::FILE *f = std::fopen(path("title-remover/result").c_str(), "wb");
-        std::fprintf(f, "nonce=%s\ncode=%08x\n", nonce.c_str(), answer);
+        std::fprintf(f, "title=PPSA01467\nnonce=%s\ncode=%08x\n", nonce.c_str(), answer);
         std::fclose(f);
         return true;
     };

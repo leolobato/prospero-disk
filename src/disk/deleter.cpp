@@ -245,7 +245,10 @@ bool Deleter::checked_ancestors(const std::string &path, const std::string &volu
         fail(result, path, EPERM);
         return false;
     }
-    // From the volume root down to the item's parent: real folders, no links.
+    // From the volume root down to the item's parent: real folders, no links,
+    // all on the volume's own mount. The console reports st_dev 0 for several
+    // file systems, so a mount below the root is found by its name.
+    const std::string root_mount = mount_of(volume_root);
     std::string at = volume_root;
     std::string rest = path.substr(volume_root.size());
     for (;;)
@@ -262,6 +265,11 @@ bool Deleter::checked_ancestors(const std::string &path, const std::string &volu
             fail(result, at, ENOTDIR);
             return false;
         }
+        if (!root_mount.empty() && at != volume_root && mount_of(at) != root_mount)
+        {
+            fail(result, at, EXDEV); // another file system, or one that can't be told
+            return false;
+        }
         while (!rest.empty() && rest.front() == '/')
             rest.erase(0, 1);
         const std::size_t slash = rest.find('/');
@@ -272,10 +280,9 @@ bool Deleter::checked_ancestors(const std::string &path, const std::string &volu
     }
 }
 
-bool Deleter::remove_tree(const std::string &path, const std::string &volume_root,
+bool Deleter::remove_tree(const std::string &path, const std::string &volume_root, Expect expect,
                           ItemResult &result)
 {
-    (void)volume_root;
     Entry top;
     int error = 0;
     if (!stat(path, &top, &error))
@@ -285,17 +292,27 @@ bool Deleter::remove_tree(const std::string &path, const std::string &volume_roo
         fail(result, path, error);
         return false;
     }
+    // A file collected as a file must still be one: a folder in its place is
+    // never emptied on the strength of a file's collection, and the reverse.
+    if ((expect == Expect::folder && top.type != EntryType::directory) ||
+        (expect == Expect::file && top.type == EntryType::directory))
+    {
+        fail(result, path, ESTALE);
+        return false;
+    }
     Entry parent;
     if (!stat(parent_of(path), &parent, &error))
     {
         fail(result, parent_of(path), error);
         return false;
     }
-    // A mount point: another drive, never ours to empty. The console reports
-    // st_dev 0 for several file systems, so the mount names are compared too.
-    const std::string mount = top.type == EntryType::directory ? mount_of(path) : std::string();
-    const std::string parent_mount = mount.empty() ? std::string() : mount_of(parent_of(path));
-    if (top.device != parent.device || (!parent_mount.empty() && mount != parent_mount))
+    // A mount point: another drive, never ours to empty. Where the volume's
+    // mount has a name, every folder must carry the same one; a folder whose
+    // name can't be read is treated as another mount.
+    const std::string root_mount = mount_of(volume_root);
+    const auto other_mount = [&](const std::string &folder)
+    { return !root_mount.empty() && mount_of(folder) != root_mount; };
+    if (top.device != parent.device || (top.type == EntryType::directory && other_mount(path)))
     {
         fail(result, path, EXDEV);
         return false;
@@ -308,6 +325,7 @@ bool Deleter::remove_tree(const std::string &path, const std::string &volume_roo
             fail(result, path, error);
             return false;
         }
+        ++result.removed;
         result.bytes += top.disk;
         done_ += top.disk;
         return true;
@@ -331,9 +349,22 @@ bool Deleter::remove_tree(const std::string &path, const std::string &volume_roo
         {
             stack.back().listed = true;
             const std::string folder = stack.back().path;
-            const std::uint64_t device = stack.back().entry.device;
+            const Entry expected = stack.back().entry;
+            const std::uint64_t device = expected.device;
             const std::size_t self = stack.size() - 1;
             set_current(folder);
+            // Checked again just before it is opened: a folder swapped for a
+            // link (or another folder) since it was listed is not followed.
+            Entry now;
+            error = 0;
+            if (!stat(folder, &now, &error) || now.type != EntryType::directory ||
+                now.device != expected.device || now.inode != expected.inode ||
+                (folder != path && other_mount(folder)))
+            {
+                fail(result, folder, error != 0 ? error : ESTALE);
+                stack.back().blocked = true;
+                continue;
+            }
             if (!list(folder, &entries, &error))
             {
                 fail(result, folder, error);
@@ -347,8 +378,7 @@ bool Deleter::remove_tree(const std::string &path, const std::string &volume_roo
                 const std::string child = child_path(folder, e.name);
                 if (e.type == EntryType::directory)
                 {
-                    const std::string child_mount = mount.empty() ? mount : mount_of(child);
-                    if (e.device != device || (!child_mount.empty() && child_mount != mount))
+                    if (e.device != device || other_mount(child))
                     {
                         fail(result, child, EXDEV); // a drive mounted inside: left alone
                         blocked = true;
@@ -359,8 +389,8 @@ bool Deleter::remove_tree(const std::string &path, const std::string &volume_roo
                 }
                 // lstat again just before removing: the entry must still be
                 // the one listed, and not a folder now.
-                Entry now;
-                if (!stat(child, &now, &error))
+                Entry entry_now;
+                if (!stat(child, &entry_now, &error))
                 {
                     if (error != ENOENT)
                     {
@@ -369,8 +399,8 @@ bool Deleter::remove_tree(const std::string &path, const std::string &volume_roo
                     }
                     continue;
                 }
-                if (now.device != e.device || now.inode != e.inode ||
-                    now.type == EntryType::directory)
+                if (entry_now.device != e.device || entry_now.inode != e.inode ||
+                    entry_now.type == EntryType::directory)
                 {
                     fail(result, child, ESTALE);
                     blocked = true;
@@ -382,8 +412,9 @@ bool Deleter::remove_tree(const std::string &path, const std::string &volume_roo
                     blocked = true;
                     continue;
                 }
-                result.bytes += now.disk;
-                done_ += now.disk;
+                ++result.removed;
+                result.bytes += entry_now.disk;
+                done_ += entry_now.disk;
             }
             stack.back().blocked = stack.back().blocked || blocked;
             for (Frame &f : inner)
@@ -411,6 +442,7 @@ bool Deleter::remove_tree(const std::string &path, const std::string &volume_roo
             }
             else
             {
+                ++result.removed;
                 result.bytes += now.disk;
                 done_ += now.disk;
             }
@@ -452,8 +484,12 @@ void Deleter::delete_item(const DeleteJob &job, ItemResult &result)
         result.outcome = Outcome::failed;
         return;
     }
-    const bool gone = remove_tree(item.path, job.volume_root, result);
-    result.outcome = gone ? Outcome::removed : result.bytes > 0 ? Outcome::partly : Outcome::failed;
+    const bool gone =
+        remove_tree(item.path, job.volume_root,
+                    item.kind == ItemKind::file ? Expect::file : Expect::folder, result);
+    result.outcome = gone                 ? Outcome::removed
+                     : result.removed > 0 ? Outcome::partly
+                                          : Outcome::failed;
     if (result.outcome != Outcome::partly || options_.dry_run || abort_)
         return;
     // What is left, so the picture shows it: a scan of the folder alone.
@@ -483,20 +519,40 @@ void Deleter::delete_title(const DeleteJob &job, ItemResult &result)
         result.reason = "Uninstalling is not available.";
         return;
     }
+    // Everything the job will touch is checked before anything changes: the
+    // folders that go with the title must be there, real folders, on their
+    // own volume (a game's data on a USB drive that was swapped is not).
+    for (const std::string &path : item.then_delete)
+    {
+        Entry folder;
+        int error = 0;
+        if (!checked_ancestors(path, root_of(options_.rules, path), result) ||
+            !stat(path, &folder, &error) || folder.type != EntryType::directory)
+        {
+            if (error != 0)
+                fail(result, path, error);
+            result.outcome = Outcome::failed;
+            result.reason = "A folder that goes with the title is not where it was; nothing was "
+                            "changed.";
+            return;
+        }
+    }
     // A Playden title's folder leaves /data/homebrew first, as Playden does:
     // what ShadowMount can no longer find, it cannot register again.
     std::vector<std::string> folders = item.then_delete;
     std::string retired_from;
     std::string retired_to;
+    std::uint64_t retired_inode = 0;
     for (std::string &path : folders)
     {
         if (options_.trash_dir.empty() || options_.rules.homebrew.empty() ||
             parent_of(path) != options_.rules.homebrew)
             continue;
         Entry folder;
+        Entry trash;
         int error = 0;
-        if (!checked_ancestors(path, root_of(options_.rules, path), result) ||
-            !stat(path, &folder, &error) || folder.type != EntryType::directory)
+        if (!stat(path, &folder, &error) || folder.type != EntryType::directory ||
+            !stat(options_.trash_dir, &trash, &error) || trash.type != EntryType::directory)
         {
             if (error != 0)
                 fail(result, path, error);
@@ -515,18 +571,23 @@ void Deleter::delete_title(const DeleteJob &job, ItemResult &result)
         }
         retired_from = path;
         retired_to = to;
+        retired_inode = folder.inode;
         path = to;
     }
     const UninstallResult u = options_.remover->uninstall(item.title_id);
     if (!u.ok)
     {
+        // Refused: the folder goes back. Accepted but not confirmed: the
+        // system may still be working, so the folder stays in the trash.
         int error = 0;
-        if (!retired_to.empty() && !move(retired_to, retired_from, &error))
+        if (!u.accepted && !retired_to.empty() && !move(retired_to, retired_from, &error))
             fail(result, retired_to, error);
         result.outcome = Outcome::failed;
         result.reason = u.reason;
+        if (u.accepted && !retired_to.empty())
+            result.reason += " Its folder waits in " + retired_to + ".";
         if (options_.log)
-            options_.log("uninstall " + item.title_id + ": " + u.reason);
+            options_.log("uninstall " + item.title_id + ": " + result.reason);
         return;
     }
     // The system removed what it owns; then the folders that go with the
@@ -534,10 +595,19 @@ void Deleter::delete_title(const DeleteJob &job, ItemResult &result)
     bool all_gone = true;
     for (const std::string &path : folders)
     {
-        const std::string root =
-            path == retired_to ? options_.trash_dir : root_of(options_.rules, path);
-        all_gone =
-            checked_ancestors(path, root, result) && remove_tree(path, root, result) && all_gone;
+        const bool retired = path == retired_to;
+        const std::string root = retired ? options_.trash_dir : root_of(options_.rules, path);
+        Entry now;
+        int error = 0;
+        // The folder in the trash must still be the one moved there.
+        if (retired && (!stat(path, &now, &error) || now.inode != retired_inode))
+        {
+            fail(result, path, error != 0 ? error : ESTALE);
+            all_gone = false;
+            continue;
+        }
+        all_gone = checked_ancestors(path, root, result) &&
+                   remove_tree(path, root, Expect::folder, result) && all_gone;
     }
     done_ += item.size > result.bytes ? item.size - result.bytes : 0;
     result.bytes = std::max(result.bytes, item.size);

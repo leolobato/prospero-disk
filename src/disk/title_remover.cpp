@@ -185,7 +185,9 @@ UninstallResult PayloadTitleRemover::uninstall(const std::string &title_id)
         r.reason =
             "The payload loader on port 9021 did not take the title remover (" + error + ").";
     long code = -1;
-    const std::string expected = std::string("nonce=") + nonce + "\n";
+    // The answer names the title and the nonce: an old answer, or one for
+    // another title, is not taken.
+    const std::string expected = "title=" + title_id + "\nnonce=" + nonce + "\n";
     for (int poll = 0; sent && poll < config_.answer_polls && code < 0; ++poll)
     {
         std::string text;
@@ -213,6 +215,7 @@ UninstallResult PayloadTitleRemover::uninstall(const std::string &title_id)
         return r;
     }
     // Accepted: the system finishes on its own time.
+    r.accepted = true;
     for (int poll = 0; poll < config_.confirm_polls; ++poll)
     {
         if (config_.presence(title_id) == TitlePresence::gone)
