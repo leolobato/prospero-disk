@@ -25,6 +25,7 @@
 #include "platform/ps5/display_egl.hpp"
 #include "platform/ps5/pad.hpp"
 #include "platform/ps5/storage_probe.hpp"
+#include "platform/ps5/write_probe.hpp"
 #include "platform/ps5/elevation/elevation.hpp"
 #include "platform/ps5/system.hpp"
 #include "platform/ps5/system_language.hpp"
@@ -367,6 +368,26 @@ int main()
             if (!error.empty())
                 sys::log("[HUI] probe.txt in %s failed: %s", dir.c_str(), error.c_str());
         }
+    }
+    // The write probe (docs/plans/collect-delete.md, section 2): only when
+    // dev/write-probe was uploaded to the install folder, and once: its report
+    // stays in the data folder until someone deletes it. Still single-threaded,
+    // so the probe may raise the effective uid.
+    if (elevation.granted && !paths.data.empty() &&
+        access((paths.app + "/dev/write-probe").c_str(), F_OK) == 0 &&
+        access((paths.data + "/write-probe.txt").c_str(), F_OK) != 0)
+    {
+        const std::string report = ps5::probe_writes(
+            paths.data, original_uid,
+            [started_us](const std::string &text)
+            {
+                sys::log("[PW] %lld %s",
+                         static_cast<long long>((sys::monotonic_us() - started_us) / 1000),
+                         text.c_str());
+            });
+        const std::string error = save::write_atomic(paths.data + "/write-probe.txt", report);
+        if (!error.empty())
+            sys::log("[HUI] write-probe.txt failed: %s", error.c_str());
     }
     const bool data_ok = !paths.data.empty() && save::ensure_directory(paths.data);
     sys::log("[HUI] storage dir=%d%s%s", data_ok ? 1 : 0, data_ok ? "" : " ",
