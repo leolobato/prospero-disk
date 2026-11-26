@@ -1,4 +1,4 @@
-// Prospero Disk - Title icons: PNG decoding (stb_image) and a tiny stored-PNG writer.
+// Prospero Disk - Title icons: PNG and WebP decoding, and a stored-PNG writer.
 // Copyright (C) 2026 Leonardo Lobato
 // SPDX-License-Identifier: GPL-3.0-or-later
 
@@ -16,22 +16,23 @@ extern "C"
     void stbi_image_free(void *retval_from_stbi_load);
 }
 
+#include "third_party/simplewebp/simplewebp.h"
+
 namespace hui::disk
 {
 
-bool decode_png(std::string_view bytes, int max_side, Image *out)
+namespace
 {
-    if (bytes.empty() || bytes.size() > static_cast<std::size_t>(INT_MAX))
-        return false;
-    int w = 0;
-    int h = 0;
-    int channels = 0;
-    unsigned char *pixels =
-        stbi_load_from_memory(reinterpret_cast<const unsigned char *>(bytes.data()),
-                              static_cast<int>(bytes.size()), &w, &h, &channels, 4);
-    if (pixels == nullptr)
-        return false;
-    // Whole-number shrink factor: a 512 icon becomes 128 with a 4 x 4 box.
+
+// Icons are at most 512 x 512; anything far larger is not an icon, and its
+// RGBA buffer is not worth allocating.
+constexpr int kMaxSide = 4096;
+
+// Whole-number shrink factor with a box filter: a 512 icon becomes 128 with
+// a 4 x 4 box. pixels is w x h RGBA. The factor comes from the long side, so
+// on a thin image the box is cut at the edge instead of reading past it.
+void shrink(const unsigned char *pixels, int w, int h, int max_side, Image *out)
+{
     const int factor = std::max(1, (std::max(w, h) + max_side - 1) / max_side);
     out->width = std::max(1, w / factor);
     out->height = std::max(1, h / factor);
@@ -39,9 +40,11 @@ bool decode_png(std::string_view bytes, int max_side, Image *out)
     for (int y = 0; y < out->height; ++y)
         for (int x = 0; x < out->width; ++x)
         {
+            const int rows = std::min(factor, h - y * factor);
+            const int cols = std::min(factor, w - x * factor);
             unsigned sum[4] = {0, 0, 0, 0};
-            for (int sy = 0; sy < factor; ++sy)
-                for (int sx = 0; sx < factor; ++sx)
+            for (int sy = 0; sy < rows; ++sy)
+                for (int sx = 0; sx < cols; ++sx)
                 {
                     const unsigned char *p =
                         pixels +
@@ -51,10 +54,61 @@ bool decode_png(std::string_view bytes, int max_side, Image *out)
                 }
             std::uint8_t *o = &out->rgba[static_cast<std::size_t>((y * out->width + x) * 4)];
             for (int c = 0; c < 4; ++c)
-                o[c] = static_cast<std::uint8_t>(sum[c] / static_cast<unsigned>(factor * factor));
+                o[c] = static_cast<std::uint8_t>(sum[c] / static_cast<unsigned>(rows * cols));
         }
+}
+
+bool is_webp(std::string_view bytes)
+{
+    return bytes.size() >= 12 && bytes.substr(0, 4) == "RIFF" && bytes.substr(8, 4) == "WEBP";
+}
+
+bool decode_webp(std::string_view bytes, int max_side, Image *out)
+{
+    // SimpleWebP reads the buffer in place (it takes a non-const pointer but
+    // does not write through it) and keeps no reference after unload.
+    simplewebp *webp = nullptr;
+    if (simplewebp_load_from_memory(const_cast<char *>(bytes.data()), bytes.size(), nullptr,
+                                    &webp) != SIMPLEWEBP_NO_ERROR)
+        return false;
+    std::size_t w = 0;
+    std::size_t h = 0;
+    simplewebp_get_dimensions(webp, &w, &h);
+    const auto limit = static_cast<std::size_t>(kMaxSide);
+    bool ok = w > 0 && h > 0 && w <= limit && h <= limit;
+    std::vector<unsigned char> pixels;
+    if (ok)
+    {
+        pixels.resize(w * h * 4);
+        ok = simplewebp_decode(webp, pixels.data(), nullptr) == SIMPLEWEBP_NO_ERROR;
+    }
+    simplewebp_unload(webp);
+    if (ok)
+        shrink(pixels.data(), static_cast<int>(w), static_cast<int>(h), max_side, out);
+    return ok;
+}
+
+} // namespace
+
+bool decode_image(std::string_view bytes, int max_side, Image *out)
+{
+    if (bytes.empty() || bytes.size() > static_cast<std::size_t>(INT_MAX))
+        return false;
+    if (is_webp(bytes))
+        return decode_webp(bytes, max_side, out);
+    int w = 0;
+    int h = 0;
+    int channels = 0;
+    unsigned char *pixels =
+        stbi_load_from_memory(reinterpret_cast<const unsigned char *>(bytes.data()),
+                              static_cast<int>(bytes.size()), &w, &h, &channels, 4);
+    if (pixels == nullptr)
+        return false;
+    const bool ok = w <= kMaxSide && h <= kMaxSide;
+    if (ok)
+        shrink(pixels, w, h, max_side, out);
     stbi_image_free(pixels);
-    return true;
+    return ok;
 }
 
 namespace

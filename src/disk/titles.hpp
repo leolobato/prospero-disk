@@ -46,17 +46,21 @@ std::string title_name_from_param_json(std::string_view json);
 
 struct AppDbTitle
 {
-    std::string name;      // "" when app.db does not know the title
-    std::string icon_path; // a readable icon0.png the console keeps, or ""
+    std::string name;                    // "" when app.db does not know the title
+    std::vector<std::string> icon_paths; // icon files the console keeps, best first
 };
 
 // The fallback (PRD 5.4) for titles whose /user/appmeta/<id> folder the app
 // cannot open: retail games' folders are 0700 and the app acts as its own
 // user after the grant. Reads the console's app.db, opened read-only and
-// immutable (no locks, no journal). On PS5 firmware (seen on 13.60) the row is
-// in tbl_contentinfo, whose icon0Info names a copy of the icon under
-// /user/catalog_downloader that is readable ("...icon0.png?ts=..."; the query
-// part is dropped). Older layouts keep the name in tbl_appbrowse_* tables.
+// immutable (no locks, no journal). On PS5 firmware (seen on 13.60) the name
+// is in tbl_contentinfo, whose icon0Info points either at a readable copy
+// under /user/catalog_downloader/appmeta (PS5 games) or back into the locked
+// appmeta folder (PS4 games); tbl_concepticoninfo_<user> adds the game
+// concept's icon under /user/catalog_downloader/conceptmeta, which is
+// readable for both. Paths come without their "?ts=..." suffix. The console
+// stores these icons as WebP under a .png name. Older layouts keep the name
+// in tbl_appbrowse_* tables.
 AppDbTitle title_from_app_db(const std::string &path, std::string_view id);
 std::string title_name_from_app_db(const std::string &path, std::string_view id);
 

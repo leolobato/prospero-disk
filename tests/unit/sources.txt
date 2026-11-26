@@ -32,4 +32,5 @@ src/ui/theme.cpp
 src/ui/widgets.cpp
 src/disk/*.cpp
 src/third_party/stb/image.c
+src/third_party/simplewebp/webp.c
 src/third_party/sqlite/sqlite.c

@@ -447,8 +447,9 @@ TEST(DiskTitles, AppDbNamesWhatParamJsonDoesNot)
 }
 
 // app.db as PS5 firmware 13.60 lays it out: no tbl_appbrowse_* tables, the
-// name and an icon path in tbl_contentinfo. Retail games' appmeta folders are
-// 0700, so for them this is the only source the app can read.
+// name and an icon path in tbl_contentinfo, the concept's icon in a table per
+// user. Retail games' appmeta folders are 0700, so for them this is the only
+// source the app can read.
 TEST(DiskTitles, AppDbContentInfoNamesAndFindsTheIcon)
 {
     char dir[] = "/tmp/pd-appdb5-XXXXXX";
@@ -475,18 +476,30 @@ TEST(DiskTitles, AppDbContentInfoNamesAndFindsTheIcon)
         icon_dir +
         "/icon0.png?ts=1791699632');"
         "INSERT INTO tbl_contentinfo VALUES ('CUSA77777', 'Old Harbour', "
+        "'/locked/appmeta/CUSA77777/icon0.png?ts=1');"
+        "INSERT INTO tbl_contentinfo VALUES ('CUSA55555', 'Web Only', "
         "'http://example.invalid/icon0.png');"
-        "INSERT INTO tbl_contentinfo VALUES ('PPSA66666', 'No Icon', NULL);";
+        "INSERT INTO tbl_contentinfo VALUES ('PPSA66666', 'No Icon', NULL);"
+        "CREATE TABLE tbl_concepticoninfo_0480174123 (primaryTitleId TEXT, icon0Info TEXT);"
+        "INSERT INTO tbl_concepticoninfo_0480174123 VALUES ('CUSA77777', '" +
+        icon_dir +
+        "/icon0.png?ts=2');"
+        "INSERT INTO tbl_concepticoninfo_0480174123 VALUES ('PPSA77777', '" +
+        icon_dir + "/icon0.png?ts=3');";
     ASSERT_EQ(sqlite3_exec(db, sql.c_str(), nullptr, nullptr, nullptr), hui::disk::sqlite::kOk);
     sqlite3_close(db);
 
     const AppDbTitle lantern = title_from_app_db(path, "PPSA77777");
     EXPECT_EQ(lantern.name, "Lantern Bay");
-    EXPECT_EQ(lantern.icon_path, icon_dir + "/icon0.png");
+    // The concept names the same file: listed once.
+    EXPECT_EQ(lantern.icon_paths, std::vector<std::string>{icon_dir + "/icon0.png"});
     const AppDbTitle harbour = title_from_app_db(path, "CUSA77777");
     EXPECT_EQ(harbour.name, "Old Harbour");
-    EXPECT_EQ(harbour.icon_path, ""); // not a file path
-    EXPECT_EQ(title_from_app_db(path, "PPSA66666").icon_path, "");
+    EXPECT_EQ(harbour.icon_paths, (std::vector<std::string>{"/locked/appmeta/CUSA77777/icon0.png",
+                                                            icon_dir + "/icon0.png"}));
+    EXPECT_EQ(title_from_app_db(path, "CUSA55555").name, "Web Only");
+    EXPECT_TRUE(title_from_app_db(path, "CUSA55555").icon_paths.empty()); // not a file path
+    EXPECT_TRUE(title_from_app_db(path, "PPSA66666").icon_paths.empty());
     EXPECT_EQ(title_name_from_app_db(path, "PPSA00000"), "");
 
     // A layout without the icon column still gives the name.
@@ -502,20 +515,24 @@ TEST(DiskTitles, AppDbContentInfoNamesAndFindsTheIcon)
               hui::disk::sqlite::kOk);
     sqlite3_close(db);
     EXPECT_EQ(title_from_app_db(bare, "PPSA77777").name, "Lantern Bay");
-    EXPECT_EQ(title_from_app_db(bare, "PPSA77777").icon_path, "");
+    EXPECT_TRUE(title_from_app_db(bare, "PPSA77777").icon_paths.empty());
 
     // No appmeta folder can be opened: the name and the icon come from app.db.
     const auto fs = make_posix_filesystem(false);
     TitleLoader loader(*fs, {root + "/locked-appmeta"}, 4, path);
     loader.request("PPSA77777");
     loader.request("CUSA77777");
+    loader.request("CUSA55555");
     loader.wait_idle();
     const std::vector<TitleInfo> done = loader.poll();
-    ASSERT_EQ(done.size(), 2u);
+    ASSERT_EQ(done.size(), 3u);
     EXPECT_EQ(done[0].name, "Lantern Bay");
     EXPECT_EQ(done[0].icon.width, 4);
+    // Its own icon is locked away; the concept's is read instead.
     EXPECT_EQ(done[1].name, "Old Harbour");
-    EXPECT_TRUE(done[1].icon.rgba.empty());
+    EXPECT_EQ(done[1].icon.width, 4);
+    EXPECT_EQ(done[2].name, "Web Only");
+    EXPECT_TRUE(done[2].icon.rgba.empty());
     EXPECT_EQ(std::system(("rm -rf '" + root + "'").c_str()), 0);
 }
 
@@ -531,12 +548,75 @@ TEST(DiskPng, StoredPngDecodesAndShrinks)
     }
     const std::string png = encode_png(8, 8, rgba.data());
     Image image;
-    ASSERT_TRUE(decode_png(png, 4, &image));
+    ASSERT_TRUE(decode_image(png, 4, &image));
     EXPECT_EQ(image.width, 4);
     EXPECT_EQ(image.height, 4);
     EXPECT_EQ(image.rgba[0], 200);
     EXPECT_EQ(image.rgba[1], 100);
-    EXPECT_FALSE(decode_png("not a png", 4, &image));
+    EXPECT_FALSE(decode_image("not a png", 4, &image));
+}
+
+// The shrink factor comes from the long side; a thin image must not make the
+// box read rows it does not have (AddressSanitizer catches it).
+TEST(DiskPng, ThinImageShrinksInsideItsBounds)
+{
+    std::vector<std::uint8_t> rgba(512 * 3 * 4, 0);
+    for (std::size_t i = 0; i < rgba.size(); i += 4)
+    {
+        rgba[i] = 90;
+        rgba[i + 3] = 255;
+    }
+    Image image;
+    ASSERT_TRUE(decode_image(encode_png(512, 3, rgba.data()), 128, &image));
+    EXPECT_EQ(image.width, 128);
+    EXPECT_EQ(image.height, 1);
+    EXPECT_EQ(image.rgba[0], 90);
+    EXPECT_EQ(image.rgba[3], 255);
+}
+
+// The console keeps retail games' home-screen icons as WebP files named
+// icon0.png. Both 16 x 16, left half red, right half blue.
+TEST(DiskPng, WebpDecodesWhateverItsName)
+{
+    const unsigned char lossy[] = {
+        0x52, 0x49, 0x46, 0x46, 0x40, 0x00, 0x00, 0x00, 0x57, 0x45, 0x42, 0x50, 0x56, 0x50, 0x38,
+        0x20, 0x34, 0x00, 0x00, 0x00, 0x90, 0x01, 0x00, 0x9d, 0x01, 0x2a, 0x10, 0x00, 0x10, 0x00,
+        0x00, 0xc0, 0x12, 0x25, 0xa0, 0x02, 0x74, 0xba, 0x00, 0x03, 0x98, 0x00, 0xfe, 0xfa, 0xcc,
+        0x7f, 0xff, 0x25, 0x1c, 0xbf, 0xf4, 0x61, 0xff, 0xf6, 0xa5, 0x9f, 0xf8, 0x61, 0xff, 0xed,
+        0x4b, 0x3f, 0xfd, 0xa9, 0x65, 0xc3, 0xff, 0xda, 0x96, 0x3b, 0xa0, 0x00};
+    // Lossless, the blue half at alpha 128.
+    const unsigned char lossless[] = {0x52, 0x49, 0x46, 0x46, 0x2a, 0x00, 0x00, 0x00, 0x57, 0x45,
+                                      0x42, 0x50, 0x56, 0x50, 0x38, 0x4c, 0x1d, 0x00, 0x00, 0x00,
+                                      0x2f, 0x0f, 0xc0, 0x03, 0x10, 0x0f, 0x30, 0x28, 0x07, 0x43,
+                                      0x3e, 0x0a, 0xe8, 0x03, 0xff, 0x63, 0x09, 0x62, 0xc1, 0x64,
+                                      0xfe, 0xd2, 0xdd, 0x19, 0x44, 0xf4, 0x3f, 0x74, 0x01, 0x00};
+    const auto bytes = [](const unsigned char *data, std::size_t size)
+    { return std::string(reinterpret_cast<const char *>(data), size); };
+
+    Image image;
+    ASSERT_TRUE(decode_image(bytes(lossy, sizeof lossy), 4, &image));
+    ASSERT_EQ(image.width, 4);
+    ASSERT_EQ(image.height, 4);
+    const std::uint8_t *left = &image.rgba[0];
+    const std::uint8_t *right = &image.rgba[3 * 4];
+    EXPECT_GT(left[0], 150); // lossy: close to (200, 40, 40), not exact
+    EXPECT_LT(left[2], 90);
+    EXPECT_LT(right[0], 90);
+    EXPECT_GT(right[2], 150);
+    EXPECT_EQ(left[3], 255);
+
+    ASSERT_TRUE(decode_image(bytes(lossless, sizeof lossless), 16, &image));
+    ASSERT_EQ(image.width, 16);
+    EXPECT_EQ(image.rgba[0], 200);
+    EXPECT_EQ(image.rgba[3], 255);
+    const std::uint8_t *blue = &image.rgba[15 * 4];
+    EXPECT_EQ(blue[0], 40);
+    EXPECT_EQ(blue[2], 200);
+    EXPECT_EQ(blue[3], 128);
+
+    // A WebP header with nothing behind it, and a truncated image.
+    EXPECT_FALSE(decode_image(std::string("RIFF\x04\x00\x00\x00WEBP", 12), 4, &image));
+    EXPECT_FALSE(decode_image(bytes(lossy, sizeof lossy - 20), 4, &image));
 }
 
 TEST(DiskFormat, ReadableNumbers)

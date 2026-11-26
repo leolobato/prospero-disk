@@ -16,6 +16,7 @@ kit's, followed by what Prospero Disk adds.
 | [SQLite](https://www.sqlite.org) 3.46.1 amalgamation, fetched by `tools/fetch-sqlite.sh` (hash pinned) and compiled through `src/third_party/sqlite/sqlite.c`; reads the console's `app.db` read-only | built into the app | public domain |
 | [stb_truetype](https://github.com/nothings/stb) | `third_party/stb/stb_truetype.h`, compiled into `src/gfx/system_fonts.cpp` | public domain or MIT |
 | [stb_image](https://github.com/nothings/stb) (PNG only) | `src/third_party/stb/stb_image.h` | public domain or MIT |
+| [SimpleWebP](https://github.com/MikuAuahDark/simplewebp) (decoder, from libwebp) | `src/third_party/simplewebp/simplewebp.h`, at the commit in `src/third_party/simplewebp/UPSTREAM`, compiled through `src/third_party/simplewebp/webp.c` | BSD-3-Clause with the WebM patent grant (`src/third_party/simplewebp/LICENSE.md`, `PATENTS.md`) |
 | The scanner's design follows [diskus](https://github.com/sharkdp/diskus) (parallel walk, one count per hard link); no diskus code is used | `src/disk/scanner.cpp` | (MIT/Apache-2.0, credited only) |
 
 The app reads the console's own fonts from `/preinst/common/font` at run time;
