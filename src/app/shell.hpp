@@ -76,6 +76,10 @@ class Shell
     }
 
     // ---- for the tour and tests ----
+    void set_scripted(bool scripted)
+    {
+        context_.scripted = scripted;
+    }
     std::size_t concept_count() const
     {
         return concepts_.size();

@@ -68,6 +68,9 @@ struct Context
     // name. Set by the app once a GL context exists; empty in tests, where a
     // design draws its placeholder instead.
     std::function<std::uint32_t(int width, int height, const std::uint8_t *rgba)> create_texture;
+    // A tour drives the input (the PC pictures, the console validation run):
+    // nobody is choosing, so a design must not act on the user's data.
+    bool scripted = false;
 };
 
 // One frame of a design, back to front:

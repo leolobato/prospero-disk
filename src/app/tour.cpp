@@ -21,6 +21,7 @@ constexpr float kOutroSeconds = 0.6f;
 
 Tour::Tour(Shell &shell, std::string only) : shell_(shell), only_(std::move(only))
 {
+    shell_.set_scripted(true);
     if (!only_.empty())
     {
         bool found = false;
