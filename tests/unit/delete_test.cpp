@@ -6,6 +6,7 @@
 #include "disk/collection.hpp"
 #include "disk/deleter.hpp"
 #include "disk/filesystem.hpp"
+#include "disk/title_remover.hpp"
 #include "disk/tree.hpp"
 #include "disk/volumes.hpp"
 
@@ -729,6 +730,150 @@ TEST(FixtureDeleter, StopsAfterTheItemAtWork)
     EXPECT_EQ(results[1].outcome, Outcome::skipped);
     Entry still;
     EXPECT_TRUE(fs->stat(root + "/download", &still));
+}
+
+// ---- uninstalling through the system ----
+
+using PayloadClient = TempDir;
+
+// Reads a whole file of the temporary folder ("" when missing).
+std::string slurp(const std::string &path)
+{
+    std::string out;
+    if (std::FILE *f = std::fopen(path.c_str(), "rb"))
+    {
+        char buffer[512];
+        std::size_t got = 0;
+        while ((got = std::fread(buffer, 1, sizeof buffer, f)) > 0)
+            out.append(buffer, got);
+        std::fclose(f);
+    }
+    return out;
+}
+
+TitleRemoverConfig client_config(const std::string &root)
+{
+    TitleRemoverConfig config;
+    config.request_dir = root + "/title-remover";
+    config.payload = root + "/title-remover.elf";
+    config.sleep = [](int) {};
+    config.answer_polls = 3;
+    config.confirm_polls = 3;
+    return config;
+}
+
+TEST_F(PayloadClient, SendsTheRequestAndReadsTheAnswer)
+{
+    write("title-remover.elf");
+    {
+        std::FILE *f = std::fopen(path("title-remover.elf").c_str(), "wb");
+        std::fputs("\x7f"
+                   "ELF payload",
+                   f);
+        std::fclose(f);
+    }
+    TitleRemoverConfig config = client_config(root_);
+    std::string request;
+    unsigned answer = 0;
+    // Stands in for the payload: answers the request with its nonce.
+    config.send = [&](const std::string &elf, std::string *)
+    {
+        EXPECT_EQ(elf.compare(0, 4,
+                              "\x7f"
+                              "ELF"),
+                  0);
+        request = slurp(path("title-remover/request"));
+        const std::size_t at = request.find("nonce=");
+        const std::string nonce = request.substr(at + 6, request.find('\n', at) - at - 6);
+        std::FILE *f = std::fopen(path("title-remover/result").c_str(), "wb");
+        std::fprintf(f, "nonce=%s\ncode=%08x\n", nonce.c_str(), answer);
+        std::fclose(f);
+        return true;
+    };
+    int listed_polls = 0;
+    config.listed = [&](const std::string &id)
+    {
+        EXPECT_EQ(id, "PPSA01467");
+        return ++listed_polls < 2; // gone on the second look
+    };
+    PayloadTitleRemover remover(config);
+    UninstallResult r = remover.uninstall("PPSA01467");
+    EXPECT_TRUE(r.ok) << r.reason;
+    EXPECT_EQ(request.rfind("title=PPSA01467\nnonce=", 0), 0u);
+    EXPECT_FALSE(exists("title-remover/request")); // cleaned up
+    struct stat info
+    {
+    };
+    ASSERT_EQ(lstat(path("title-remover").c_str(), &info), 0);
+    EXPECT_EQ(info.st_mode & 07777, 0777u);
+
+    // A refusal carries the console's code.
+    answer = 0x80990001;
+    r = remover.uninstall("PPSA01467");
+    EXPECT_FALSE(r.ok);
+    EXPECT_NE(r.reason.find("0x80990001"), std::string::npos);
+
+    // Accepted but never confirmed.
+    answer = 0;
+    config.listed = [](const std::string &) { return true; };
+    PayloadTitleRemover stubborn(config);
+    r = stubborn.uninstall("PPSA01467");
+    EXPECT_FALSE(r.ok);
+    EXPECT_NE(r.reason.find("not confirmed"), std::string::npos);
+}
+
+TEST_F(PayloadClient, FailsCleanlyWithoutPayloadOrAnswer)
+{
+    TitleRemoverConfig config = client_config(root_);
+    bool sent = false;
+    config.send = [&](const std::string &, std::string *)
+    {
+        sent = true;
+        return true;
+    };
+    PayloadTitleRemover missing(config);
+    UninstallResult r = missing.uninstall("PPSA01467");
+    EXPECT_FALSE(r.ok);
+    EXPECT_FALSE(sent);
+    EXPECT_NE(r.reason.find("missing"), std::string::npos);
+
+    {
+        std::FILE *f = std::fopen(path("title-remover.elf").c_str(), "wb");
+        std::fputs("\x7f"
+                   "ELF",
+                   f);
+        std::fclose(f);
+    }
+    PayloadTitleRemover silent(config); // sent, but nobody writes a result
+    r = silent.uninstall("PPSA01467");
+    EXPECT_TRUE(sent);
+    EXPECT_FALSE(r.ok);
+    EXPECT_NE(r.reason.find("did not answer"), std::string::npos);
+
+    // A stale answer with another nonce is not taken.
+    {
+        std::FILE *f = std::fopen(path("title-remover/result").c_str(), "wb");
+        std::fputs("nonce=0000000000000000-0000\ncode=00000000\n", f);
+        std::fclose(f);
+    }
+    config.send = [&](const std::string &, std::string *) { return true; };
+    PayloadTitleRemover stale(config);
+    r = stale.uninstall("PPSA01467");
+    EXPECT_FALSE(r.ok);
+}
+
+TEST(FixtureTitles, UninstallRemovesTheGameItsPatchAndItsMeta)
+{
+    const auto fs = make_fixture_filesystem();
+    const std::string root = kFixtureRoot;
+    const auto remover = make_fixture_title_remover(*fs, root);
+    EXPECT_TRUE(remover->uninstall("PPSA10021").ok);
+    Entry gone;
+    EXPECT_FALSE(fs->stat(root + "/app/PPSA10021", &gone));
+    EXPECT_FALSE(fs->stat(root + "/patch/PPSA10021", &gone));
+    EXPECT_FALSE(fs->stat(root + "/appmeta/PPSA10021", &gone));
+    EXPECT_TRUE(fs->stat(root + "/app/PPSA10388", &gone));
+    EXPECT_FALSE(remover->uninstall("PPSA99999").ok);
 }
 
 } // namespace

@@ -295,6 +295,9 @@ actual = hashlib.sha256((app / "lapy.elf").read_bytes()).hexdigest()
 assert manifest["elf_sha256"] == actual
 assert manifest["target_title"] == sys.argv[2] and manifest["mode"] == "elf-helper"
 PY
+    # The one-shot title remover (tools/title-remover): uninstalls a collected
+    # game through the system, sent to the same payload loader as the helper.
+    bash "$root/tools/build-title-remover.sh" "$app/title-remover.elf"
 fi
 
 [[ -f $root/runtime/libc.prx ]] || bash "$root/tools/rebuild-libc.sh"

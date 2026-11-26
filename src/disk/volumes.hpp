@@ -78,7 +78,10 @@ struct Environment
     std::map<std::string, std::string> playden_titles;
     ProtectionRules protection; // what may be collected (docs/plans/collect-delete.md)
     Privileged privileged;      // raises the euid for one removal; empty off the console
-    std::string cache_dir;      // empty: no cache
+    // Uninstalls collected games: the payload on a PS5, a stand-in on the
+    // fixture, none for folders on a PC.
+    std::shared_ptr<TitleRemover> remover;
+    std::string cache_dir; // empty: no cache
     Elevation elevation;
     bool fixture = false;
 };

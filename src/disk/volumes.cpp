@@ -4,9 +4,12 @@
 
 #include "disk/volumes.hpp"
 
+#include "disk/title_remover.hpp"
 #include "disk/titles.hpp"
 
+#include <chrono>
 #include <cstdlib>
+#include <thread>
 #include <utility>
 
 namespace hui::disk
@@ -175,6 +178,17 @@ Environment make_environment()
         env.elevation.granted ? "/data/prospero-disk/cache" : "/download0/prospero-disk/cache";
     env.protection = console_protection(env.specs, env.playden_titles);
     env.privileged = privileged_state();
+    if (env.elevation.granted)
+    {
+        TitleRemoverConfig remover;
+        remover.payload = "/data/homebrew/PPSA93475/title-remover.elf";
+        remover.send = send_to_payload_loader;
+        const std::string app_db = env.app_db;
+        remover.listed = [app_db](const std::string &id)
+        { return !title_name_from_app_db(app_db, id).empty(); };
+        remover.sleep = [](int ms) { std::this_thread::sleep_for(std::chrono::milliseconds(ms)); };
+        env.remover = std::make_shared<PayloadTitleRemover>(std::move(remover));
+    }
 #else
     const char *volumes = std::getenv("PD_VOLUMES");
     if (volumes != nullptr && volumes[0] != 0)
@@ -208,6 +222,7 @@ Environment make_environment()
             {root + "/appmeta", "The console's game information: it must stay."}};
         env.protection.title_parents = {root + "/app"};
         env.protection.title_companions = {root + "/patch"};
+        env.remover = make_fixture_title_remover(*env.fs, root);
     }
 #endif
     return env;
