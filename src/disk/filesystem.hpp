@@ -4,6 +4,7 @@
 
 #pragma once
 
+#include <cerrno>
 #include <cstdint>
 #include <memory>
 #include <string>
@@ -48,11 +49,27 @@ class FileSystem
     // Fills out with the entries of a directory, without "." and "..".
     // Returns false with an errno value when it cannot be read.
     virtual bool list(const std::string &path, std::vector<Entry> *out, int *error) const = 0;
-    // lstat of one path.
+    // lstat of one path. On failure errno says why (EACCES when a folder on
+    // the way may not be searched).
     virtual bool stat(const std::string &path, Entry *out) const = 0;
     virtual bool space(const std::string &path, SpaceInfo *out) const = 0;
     virtual bool read_file(const std::string &path, std::string *out,
                            std::size_t max_bytes) const = 0;
+    // Removes one entry that is not a folder, without following it (unlink),
+    // and one empty folder (rmdir). Both refuse unless the file system allows
+    // removal; false with an errno value.
+    virtual bool remove_file(const std::string &path, int *error) const
+    {
+        (void)path;
+        *error = EROFS;
+        return false;
+    }
+    virtual bool remove_folder(const std::string &path, int *error) const
+    {
+        (void)path;
+        *error = EROFS;
+        return false;
+    }
     // The screen's clock moved on: a paced fixture lets more folders through.
     virtual void advance(double seconds) const
     {
@@ -71,14 +88,17 @@ class FileSystem
 // The real file system through opendir, lstat and statvfs (on the console,
 // _fstatfs resolved through sceKernelDlsym: the plain statfs import ends the
 // process). With allow_space false, space() always fails; the console asks
-// for sizes only once elevated.
-std::unique_ptr<FileSystem> make_posix_filesystem(bool allow_space = true);
+// for sizes only once elevated. With allow_remove false, removal refuses
+// (EROFS): on a PC only PD_ALLOW_DELETE=1 lets the app delete real files.
+std::unique_ptr<FileSystem> make_posix_filesystem(bool allow_space = true,
+                                                  bool allow_remove = false);
 
 // A made-up volume for the PC preview, the tour and the tests: the same tree
 // every time, with invented titles under user/app and the appmeta files that
 // name them. With folders_per_second > 0 it lists that many folders per second
 // of advance(): a tour runs on simulated time, so a scan "in progress" is the
-// same picture on every run however fast the PC is.
+// same picture on every run however fast the PC is. It can remove entries:
+// they leave its tree, and the space they used is free again.
 std::unique_ptr<FileSystem> make_fixture_filesystem(double folders_per_second = 0.0);
 
 // The fixture's two volumes: an internal drive and a USB drive.

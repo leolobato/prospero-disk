@@ -116,7 +116,7 @@ Environment make_environment()
     Environment env;
     env.elevation = elevation_state();
 #if defined(__PROSPERO__)
-    env.fs = make_posix_filesystem(env.elevation.granted);
+    env.fs = make_posix_filesystem(env.elevation.granted, env.elevation.granted);
     env.specs = console_volume_specs();
     env.appmeta_roots = {"/user/appmeta", "/user/appmeta/external"};
     env.app_db = "/system_data/priv/mms/app.db";
@@ -129,7 +129,9 @@ Environment make_environment()
     const char *volumes = std::getenv("PD_VOLUMES");
     if (volumes != nullptr && volumes[0] != 0)
     {
-        env.fs = make_posix_filesystem();
+        // Real folders on a PC: deleting from them is opt-in.
+        const char *allow = std::getenv("PD_ALLOW_DELETE");
+        env.fs = make_posix_filesystem(true, allow != nullptr && std::string(allow) == "1");
         env.specs = parse_volumes(volumes);
         if (const char *cache = std::getenv("PD_CACHE"); cache != nullptr)
             env.cache_dir = cache;

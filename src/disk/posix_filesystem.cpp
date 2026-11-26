@@ -72,7 +72,8 @@ void fill(const struct stat &st, Entry *out)
 class PosixFileSystem final : public FileSystem
 {
   public:
-    explicit PosixFileSystem(bool allow_space) : allow_space_(allow_space)
+    PosixFileSystem(bool allow_space, bool allow_remove)
+        : allow_space_(allow_space), allow_remove_(allow_remove)
     {
     }
 
@@ -117,11 +118,39 @@ class PosixFileSystem final : public FileSystem
         {
         };
         if (lstat(path.c_str(), &st) != 0)
-            return false;
+            return false; // errno from lstat
         const std::size_t slash = path.find_last_of('/');
         out->name = slash == std::string::npos ? path : path.substr(slash + 1);
         fill(st, out);
         return true;
+    }
+
+    // unlink and rmdir are libkernel exports, which an app may call; unlinkat
+    // is only in libkernel_sys and would end the process (CONSOLE_NOTES 3).
+    bool remove_file(const std::string &path, int *error) const override
+    {
+        if (!allow_remove_)
+        {
+            *error = EROFS;
+            return false;
+        }
+        if (unlink(path.c_str()) == 0)
+            return true;
+        *error = errno;
+        return false;
+    }
+
+    bool remove_folder(const std::string &path, int *error) const override
+    {
+        if (!allow_remove_)
+        {
+            *error = EROFS;
+            return false;
+        }
+        if (rmdir(path.c_str()) == 0)
+            return true;
+        *error = errno;
+        return false;
     }
 
     bool space(const std::string &path, SpaceInfo *out) const override
@@ -191,13 +220,14 @@ class PosixFileSystem final : public FileSystem
 
   private:
     bool allow_space_;
+    bool allow_remove_;
 };
 
 } // namespace
 
-std::unique_ptr<FileSystem> make_posix_filesystem(bool allow_space)
+std::unique_ptr<FileSystem> make_posix_filesystem(bool allow_space, bool allow_remove)
 {
-    return std::make_unique<PosixFileSystem>(allow_space);
+    return std::make_unique<PosixFileSystem>(allow_space, allow_remove);
 }
 
 } // namespace hui::disk

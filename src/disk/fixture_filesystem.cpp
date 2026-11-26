@@ -138,6 +138,7 @@ class FixtureFileSystem final : public FileSystem
             budget_ = budget_ >= 1.0 ? budget_ - 1.0 : 0.0;
         }
         out->clear();
+        std::lock_guard<std::mutex> data(data_mutex_);
         if (unreadable_.count(path) != 0)
         {
             *error = EACCES;
@@ -155,6 +156,7 @@ class FixtureFileSystem final : public FileSystem
 
     bool stat(const std::string &path, Entry *out) const override
     {
+        std::lock_guard<std::mutex> data(data_mutex_);
         if (path == kFixtureRoot || path == kFixtureUsbRoot)
         {
             Entry e;
@@ -168,22 +170,76 @@ class FixtureFileSystem final : public FileSystem
             return true;
         }
         const std::size_t slash = path.find_last_of('/');
-        if (slash == std::string::npos)
-            return false;
-        const auto it = dirs_.find(path.substr(0, slash));
-        if (it == dirs_.end())
-            return false;
-        for (const Entry &e : it->second)
-            if (e.name == path.substr(slash + 1))
-            {
-                *out = e;
-                return true;
-            }
+        const auto it =
+            slash == std::string::npos ? dirs_.end() : dirs_.find(path.substr(0, slash));
+        if (it != dirs_.end())
+            for (const Entry &e : it->second)
+                if (e.name == path.substr(slash + 1))
+                {
+                    *out = e;
+                    return true;
+                }
+        errno = ENOENT;
         return false;
+    }
+
+    bool remove_file(const std::string &path, int *error) const override
+    {
+        std::lock_guard<std::mutex> data(data_mutex_);
+        std::vector<Entry> *siblings = nullptr;
+        const std::size_t at = find(path, &siblings, error);
+        if (at == kMissing)
+            return false;
+        const Entry gone = (*siblings)[at];
+        if (gone.type == EntryType::directory)
+        {
+            *error = EPERM; // unlink on a folder
+            return false;
+        }
+        siblings->erase(siblings->begin() + static_cast<std::ptrdiff_t>(at));
+        contents_.erase(path);
+        // A hard link frees nothing while another name is left.
+        bool linked = false;
+        for (auto &dir : dirs_)
+            for (Entry &e : dir.second)
+                if (e.device == gone.device && e.inode == gone.inode)
+                {
+                    e.links = e.links > 1 ? e.links - 1 : 1;
+                    linked = true;
+                }
+        if (!linked)
+            release(gone);
+        return true;
+    }
+
+    bool remove_folder(const std::string &path, int *error) const override
+    {
+        std::lock_guard<std::mutex> data(data_mutex_);
+        std::vector<Entry> *siblings = nullptr;
+        const std::size_t at = find(path, &siblings, error);
+        if (at == kMissing)
+            return false;
+        if ((*siblings)[at].type != EntryType::directory)
+        {
+            *error = ENOTDIR;
+            return false;
+        }
+        const auto dir = dirs_.find(path);
+        if (dir != dirs_.end() && !dir->second.empty())
+        {
+            *error = ENOTEMPTY;
+            return false;
+        }
+        release((*siblings)[at]);
+        siblings->erase(siblings->begin() + static_cast<std::ptrdiff_t>(at));
+        if (dir != dirs_.end())
+            dirs_.erase(dir);
+        return true;
     }
 
     bool space(const std::string &path, SpaceInfo *out) const override
     {
+        std::lock_guard<std::mutex> data(data_mutex_);
         if (path.rfind(kFixtureUsbRoot, 0) == 0)
         {
             out->total = 256 * kGB;
@@ -195,13 +251,14 @@ class FixtureFileSystem final : public FileSystem
             return false;
         out->total = kFixtureTotal;
         // More used than the scan can see: the hidden system share (PRD 5.3).
-        out->used = 602 * kGB;
+        out->used = internal_used_;
         out->free = out->total - out->used;
         return true;
     }
 
     bool read_file(const std::string &path, std::string *out, std::size_t max_bytes) const override
     {
+        std::lock_guard<std::mutex> data(data_mutex_);
         const auto it = contents_.find(path);
         if (it == contents_.end() || it->second.size() > max_bytes)
             return false;
@@ -210,6 +267,44 @@ class FixtureFileSystem final : public FileSystem
     }
 
   private:
+    static constexpr std::size_t kMissing = static_cast<std::size_t>(-1);
+
+    // The entry for path in its parent's list; kMissing with an errno value.
+    // A folder that cannot be read refuses changes inside it (EACCES), and so
+    // does a volume root (EBUSY). Called with data_mutex_ held.
+    std::size_t find(const std::string &path, std::vector<Entry> **siblings, int *error) const
+    {
+        const std::size_t slash = path.find_last_of('/');
+        if (path == kFixtureRoot || path == kFixtureUsbRoot || slash == std::string::npos)
+        {
+            *error = EBUSY;
+            return kMissing;
+        }
+        const std::string parent = path.substr(0, slash);
+        if (unreadable_.count(parent) != 0 || unreadable_.count(path) != 0)
+        {
+            *error = EACCES;
+            return kMissing;
+        }
+        const auto it = dirs_.find(parent);
+        if (it != dirs_.end())
+            for (std::size_t i = 0; i < it->second.size(); ++i)
+                if (it->second[i].name == path.substr(slash + 1))
+                {
+                    *siblings = &it->second;
+                    return i;
+                }
+        *error = ENOENT;
+        return kMissing;
+    }
+
+    // The space an entry used is free again on its drive.
+    void release(const Entry &e) const
+    {
+        std::uint64_t &used = e.device == 3 ? usb_used_ : internal_used_;
+        used = used > e.disk ? used - e.disk : 0;
+    }
+
     Entry dir_entry(const char *name, std::uint64_t device = 1)
     {
         Entry e;
@@ -390,10 +485,13 @@ class FixtureFileSystem final : public FileSystem
     mutable bool scanning_ = false;
     std::uint64_t inode_ = 100;
     std::uint64_t seed_ = 0x5eed;
-    std::map<std::string, std::vector<Entry>> dirs_;
-    std::map<std::string, std::string> contents_;
+    // The tree is read by scanner and title threads and changed by removals.
+    mutable std::mutex data_mutex_;
+    mutable std::map<std::string, std::vector<Entry>> dirs_;
+    mutable std::map<std::string, std::string> contents_;
     std::set<std::string> unreadable_;
-    std::uint64_t usb_used_ = 1ull << 30; // the file system's own share
+    mutable std::uint64_t usb_used_ = 1ull << 30; // the file system's own share
+    mutable std::uint64_t internal_used_ = 602 * kGB;
 };
 
 } // namespace
