@@ -106,12 +106,15 @@ class Probe
     std::string out_;
 };
 
+// A folder the app's user may not search (root's 0700 /user/download) hides
+// what is in it: count that as present, so the clean-up still tries to remove
+// it with the euid raised instead of leaving it behind.
 bool exists(const std::string &path)
 {
     struct stat st
     {
     };
-    return lstat(path.c_str(), &st) == 0;
+    return lstat(path.c_str(), &st) == 0 || errno == EACCES;
 }
 
 bool make_dir(const std::string &path, mode_t mode)
