@@ -3,6 +3,7 @@
 
 #include "disk/cache.hpp"
 #include "disk/collection.hpp"
+#include "disk/deleter.hpp"
 #include "disk/filesystem.hpp"
 #include "disk/tree.hpp"
 #include "disk/volumes.hpp"
@@ -406,6 +407,327 @@ TEST(CollectionModel, OneFolderSeenFromTwoVolumesCountsOnce)
     // The two console volumes are one drive.
     const std::vector<VolumeSpec> specs = console_volume_specs();
     EXPECT_EQ(drive_of(specs[0]), drive_of(specs[1]));
+}
+
+// ---- the deleter ----
+
+DeleteJob folder_job(const std::string &path, const std::string &root, std::uint64_t size = 0)
+{
+    DeleteJob job;
+    job.item.key = path;
+    job.item.path = path;
+    job.item.size = size;
+    job.volume_root = root;
+    return job;
+}
+
+std::vector<ItemResult> run(const FileSystem &fs, DeleteOptions options)
+{
+    Deleter deleter;
+    EXPECT_TRUE(deleter.start(fs, std::move(options)));
+    deleter.join();
+    EXPECT_TRUE(deleter.progress().finished);
+    return deleter.take();
+}
+
+using PosixDeleter = TempDir;
+
+TEST_F(PosixDeleter, RemovesBottomUpAndNeverFollowsALink)
+{
+    folder("v");
+    folder("v/item");
+    folder("v/item/deep");
+    folder("v/item/deep/empty");
+    write("v/item/a.bin", 8192);
+    write("v/item/deep/b.bin", 8192);
+    folder("outside");
+    write("outside/keep.bin");
+    ASSERT_EQ(symlink(path("outside").c_str(), path("v/item/deep/to_outside").c_str()), 0);
+    ASSERT_EQ(symlink(path("outside/keep.bin").c_str(), path("v/item/to_keep").c_str()), 0);
+
+    const auto fs = make_posix_filesystem(true, true);
+    DeleteOptions options;
+    options.rules.volume_roots = {path("v")};
+    options.jobs = {folder_job(path("v/item"), path("v"))};
+    const auto results = run(*fs, std::move(options));
+    ASSERT_EQ(results.size(), 1u);
+    EXPECT_EQ(results[0].outcome, Outcome::removed) << results[0].error_path;
+    EXPECT_GE(results[0].bytes, 16384u);
+    EXPECT_FALSE(exists("v/item"));
+    EXPECT_TRUE(exists("outside/keep.bin"));
+}
+
+TEST_F(PosixDeleter, KeepsGoingPastWhatItCannotRemove)
+{
+    if (geteuid() == 0)
+        GTEST_SKIP() << "root ignores folder permissions here";
+    folder("v");
+    folder("v/item");
+    folder("v/item/locked");
+    write("v/item/locked/stays.bin");
+    write("v/item/goes.bin");
+    folder("v/item/also");
+    write("v/item/also/goes.bin");
+    ASSERT_EQ(chmod(path("v/item/locked").c_str(), 0555), 0);
+
+    const auto fs = make_posix_filesystem(true, true);
+    DeleteOptions options;
+    options.rules.volume_roots = {path("v")};
+    options.jobs = {folder_job(path("v/item"), path("v"))};
+    const auto results = run(*fs, std::move(options));
+    ASSERT_EQ(results.size(), 1u);
+    EXPECT_EQ(results[0].outcome, Outcome::partly);
+    EXPECT_EQ(results[0].error, EACCES);
+    EXPECT_EQ(results[0].error_path, path("v/item/locked/stays.bin"));
+    EXPECT_FALSE(exists("v/item/goes.bin"));
+    EXPECT_FALSE(exists("v/item/also"));
+    EXPECT_TRUE(exists("v/item/locked/stays.bin"));
+    // What is left, scanned, for the picture.
+    ASSERT_NE(results[0].left, nullptr);
+    EXPECT_EQ(results[0].left->node(0).files, 1u);
+}
+
+TEST_F(PosixDeleter, RefusesAPathThroughALink)
+{
+    folder("v");
+    folder("elsewhere");
+    folder("elsewhere/item");
+    write("elsewhere/item/keep.bin");
+    ASSERT_EQ(symlink(path("elsewhere").c_str(), path("v/link").c_str()), 0);
+
+    const auto fs = make_posix_filesystem(true, true);
+    DeleteOptions options;
+    options.rules.volume_roots = {path("v")};
+    // Collected when v/link was a real folder; now it points elsewhere.
+    options.jobs = {folder_job(path("v/link/item"), path("v"))};
+    const auto results = run(*fs, std::move(options));
+    ASSERT_EQ(results.size(), 1u);
+    EXPECT_EQ(results[0].outcome, Outcome::failed);
+    EXPECT_EQ(results[0].error, ENOTDIR);
+    EXPECT_TRUE(exists("elsewhere/item/keep.bin"));
+}
+
+TEST_F(PosixDeleter, DryRunRemovesNothing)
+{
+    folder("v");
+    folder("v/item");
+    write("v/item/a.bin", 8192);
+    const auto fs = make_posix_filesystem(true, true);
+    DeleteOptions options;
+    options.rules.volume_roots = {path("v")};
+    options.dry_run = true;
+    options.jobs = {folder_job(path("v/item"), path("v"))};
+    const auto results = run(*fs, std::move(options));
+    ASSERT_EQ(results.size(), 1u);
+    EXPECT_EQ(results[0].outcome, Outcome::removed);
+    EXPECT_GE(results[0].bytes, 8192u);
+    EXPECT_TRUE(exists("v/item/a.bin"));
+}
+
+ProtectionRules fixture_rules()
+{
+    ProtectionRules rules;
+    const std::string root = kFixtureRoot;
+    rules.volume_roots = {kFixtureRoot, kFixtureUsbRoot};
+    rules.protected_roots = {{root + "/appmeta", "must stay"}};
+    rules.title_parents = {root + "/app"};
+    return rules;
+}
+
+TEST(FixtureDeleter, FreesSpaceSkipsMountsAndRechecksTheRules)
+{
+    const auto fs = make_fixture_filesystem();
+    const std::string root = kFixtureRoot;
+    SpaceInfo before;
+    ASSERT_TRUE(fs->space(root, &before));
+    DeleteOptions options;
+    options.rules = fixture_rules();
+    options.jobs = {folder_job(root + "/home", root), folder_job(root + "/mnt_other", root),
+                    folder_job(root + "/appmeta", root), folder_job(root + "/app", root)};
+    const auto results = run(*fs, std::move(options));
+    ASSERT_EQ(results.size(), 4u);
+    EXPECT_EQ(results[0].outcome, Outcome::removed);
+    Entry gone;
+    EXPECT_FALSE(fs->stat(root + "/home", &gone));
+    SpaceInfo after;
+    ASSERT_TRUE(fs->space(root, &after));
+    EXPECT_EQ(before.used - after.used, results[0].bytes);
+    // Another device: a mount point is never emptied.
+    EXPECT_EQ(results[1].outcome, Outcome::failed);
+    EXPECT_EQ(results[1].error, EXDEV);
+    // The rules are checked again, whatever the collection said.
+    EXPECT_EQ(results[2].outcome, Outcome::failed);
+    EXPECT_EQ(results[2].reason, "must stay");
+    EXPECT_EQ(results[3].outcome, Outcome::failed);
+    EXPECT_TRUE(fs->stat(root + "/appmeta", &gone));
+    EXPECT_TRUE(fs->stat(root + "/app", &gone));
+}
+
+// Refuses removal with EACCES until the euid is "raised", like a root-owned
+// folder on the console.
+class OwnedFileSystem final : public FileSystem
+{
+  public:
+    explicit OwnedFileSystem(const FileSystem &inner) : inner_(inner)
+    {
+    }
+    bool list(const std::string &p, std::vector<Entry> *out, int *error) const override
+    {
+        return inner_.list(p, out, error);
+    }
+    bool stat(const std::string &p, Entry *out) const override
+    {
+        return inner_.stat(p, out);
+    }
+    bool space(const std::string &p, SpaceInfo *out) const override
+    {
+        return inner_.space(p, out);
+    }
+    bool read_file(const std::string &p, std::string *out, std::size_t max) const override
+    {
+        return inner_.read_file(p, out, max);
+    }
+    bool remove_file(const std::string &p, int *error) const override
+    {
+        if (!raised)
+        {
+            *error = EACCES;
+            return false;
+        }
+        return inner_.remove_file(p, error);
+    }
+    bool remove_folder(const std::string &p, int *error) const override
+    {
+        if (!raised)
+        {
+            *error = EACCES;
+            return false;
+        }
+        return inner_.remove_folder(p, error);
+    }
+    mutable bool raised = false;
+    mutable int raises = 0;
+
+  private:
+    const FileSystem &inner_;
+};
+
+TEST(FixtureDeleter, RetriesWithTheEuidRaised)
+{
+    const auto inner = make_fixture_filesystem();
+    OwnedFileSystem fs(*inner);
+    const std::string root = kFixtureRoot;
+    DeleteOptions options;
+    options.rules = fixture_rules();
+    options.jobs = {folder_job(root + "/download", root)};
+    options.privileged = [&fs](const std::function<bool()> &call)
+    {
+        ++fs.raises;
+        fs.raised = true;
+        const bool ok = call();
+        fs.raised = false;
+        return ok;
+    };
+    const auto results = run(fs, std::move(options));
+    ASSERT_EQ(results.size(), 1u);
+    EXPECT_EQ(results[0].outcome, Outcome::removed);
+    EXPECT_GT(fs.raises, 0);
+    EXPECT_FALSE(fs.raised);
+    Entry gone;
+    EXPECT_FALSE(fs.stat(root + "/download", &gone));
+
+    // Without a way to raise it, nothing goes.
+    const auto again = make_fixture_filesystem();
+    OwnedFileSystem locked(*again);
+    DeleteOptions plain;
+    plain.rules = fixture_rules();
+    plain.jobs = {folder_job(root + "/download", root)};
+    const auto refused = run(locked, std::move(plain));
+    EXPECT_EQ(refused[0].outcome, Outcome::failed);
+    EXPECT_EQ(refused[0].error, EACCES);
+}
+
+class FakeRemover final : public TitleRemover
+{
+  public:
+    UninstallResult uninstall(const std::string &title_id) override
+    {
+        asked.push_back(title_id);
+        if (on_uninstall)
+            on_uninstall();
+        UninstallResult r;
+        r.ok = answer;
+        r.reason = answer ? "" : "The console refused (0x80990001).";
+        return r;
+    }
+    bool answer = true;
+    std::vector<std::string> asked;
+    std::function<void()> on_uninstall;
+};
+
+DeleteJob title_job(const ProtectionRules &rules, const std::string &path, const std::string &root)
+{
+    const Check check = check_path(rules, path);
+    DeleteJob job = folder_job(path, root, 1000);
+    job.item.kind = ItemKind::title;
+    job.item.title_id = check.title_id;
+    job.item.then_delete = check.then_delete;
+    return job;
+}
+
+TEST(FixtureDeleter, TitlesGoThroughTheSystemThenTheirFolders)
+{
+    const auto fs = make_fixture_filesystem();
+    const std::string root = kFixtureRoot;
+    ProtectionRules rules = fixture_rules();
+    // A Playden-like layout on the fixture: game data under home stands in.
+    rules.homebrew = root + "/home";
+    rules.playden_game_folders = {root + "/home/10000000"};
+    rules.playden_titles = {{"steam-1", "FAKE78001"}};
+    FakeRemover remover;
+
+    DeleteOptions options;
+    options.rules = rules;
+    options.remover = &remover;
+    options.jobs = {title_job(rules, root + "/app/PPSA10021", root)};
+    auto results = run(*fs, options);
+    ASSERT_EQ(results.size(), 1u);
+    EXPECT_EQ(results[0].outcome, Outcome::removed);
+    EXPECT_EQ(remover.asked, std::vector<std::string>{"PPSA10021"});
+    // The game's folder is the system's to remove: never walked by hand.
+    Entry still;
+    EXPECT_TRUE(fs->stat(root + "/app/PPSA10021/app.pkg", &still));
+
+    // A refusal leaves everything in place.
+    remover.answer = false;
+    remover.asked.clear();
+    options.jobs = {title_job(rules, root + "/app/PPSA10388", root)};
+    results = run(*fs, options);
+    EXPECT_EQ(results[0].outcome, Outcome::failed);
+    EXPECT_EQ(results[0].reason, "The console refused (0x80990001).");
+}
+
+TEST(FixtureDeleter, StopsAfterTheItemAtWork)
+{
+    const auto fs = make_fixture_filesystem();
+    const std::string root = kFixtureRoot;
+    const ProtectionRules rules = fixture_rules();
+    FakeRemover remover;
+    Deleter deleter;
+    remover.on_uninstall = [&deleter] { deleter.stop(); };
+    DeleteOptions options;
+    options.rules = rules;
+    options.remover = &remover;
+    options.jobs = {title_job(rules, root + "/app/PPSA10021", root),
+                    folder_job(root + "/download", root)};
+    ASSERT_TRUE(deleter.start(*fs, std::move(options)));
+    deleter.join();
+    const auto results = deleter.take();
+    ASSERT_EQ(results.size(), 2u);
+    EXPECT_EQ(results[0].outcome, Outcome::removed);
+    EXPECT_EQ(results[1].outcome, Outcome::skipped);
+    Entry still;
+    EXPECT_TRUE(fs->stat(root + "/download", &still));
 }
 
 } // namespace
