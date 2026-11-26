@@ -715,6 +715,20 @@ TEST(DiskVolumes, EmptyMountFoldersAreNotDrives)
     EXPECT_EQ(volumes[2].spec.key, "usb0");
 }
 
+TEST(DiskVolumes, InternalDiskIsListedOnce)
+{
+    // /data is a nullfs view of /user/data: a row of its own would repeat
+    // Internal's disk bar and count the same files twice.
+    int internal = 0;
+    for (const VolumeSpec &spec : console_volume_specs())
+    {
+        EXPECT_NE(spec.path, "/data");
+        if (spec.kind == VolumeKind::internal)
+            ++internal;
+    }
+    EXPECT_EQ(internal, 1);
+}
+
 // Folders with files in them, kept in memory.
 class MemoryFileSystem final : public FileSystem
 {

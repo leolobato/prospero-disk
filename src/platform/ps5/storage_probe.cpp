@@ -122,7 +122,7 @@ std::string probe_storage(bool elevated, const std::function<void(const std::str
     std::vector<std::string> paths;
     for (const disk::VolumeSpec &spec : disk::console_volume_specs())
         paths.push_back(spec.path);
-    for (const char *other : {"/system_data", "/preinst/common/font", "/user/appmeta",
+    for (const char *other : {"/data", "/system_data", "/preinst/common/font", "/user/appmeta",
                               "/system_data/priv/mms", "/system", "/"})
         paths.emplace_back(other);
     for (const std::string &path : paths)

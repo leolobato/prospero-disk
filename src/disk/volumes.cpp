@@ -69,9 +69,10 @@ bool is_mounted(const FileSystem &fs, const VolumeSpec &spec)
 
 std::vector<VolumeSpec> console_volume_specs()
 {
+    // /data is not listed: on the console it is a nullfs view of /user/data, so it
+    // would repeat Internal's disk bar and count files a scan of /user already counts.
     std::vector<VolumeSpec> specs = {
         {"internal", "Internal", "/user", VolumeKind::internal},
-        {"data", "Homebrew data", "/data", VolumeKind::internal},
         {"ext0", "Extended", "/mnt/ext0", VolumeKind::extended},
         {"ext1", "Extended 2", "/mnt/ext1", VolumeKind::extended},
     };
