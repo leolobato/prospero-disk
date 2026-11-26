@@ -572,6 +572,70 @@ TEST(FixtureDeleter, FreesSpaceSkipsMountsAndRechecksTheRules)
 
 // Refuses removal with EACCES until the euid is "raised", like a root-owned
 // folder on the console.
+// The console's case: two file systems that both report st_dev 0. Only the
+// mount names tell that one is mounted inside the other.
+class SameDeviceFileSystem final : public FileSystem
+{
+  public:
+    explicit SameDeviceFileSystem(const FileSystem &inner) : inner_(inner)
+    {
+    }
+    bool list(const std::string &p, std::vector<Entry> *out, int *error) const override
+    {
+        if (!inner_.list(p, out, error))
+            return false;
+        for (Entry &e : *out)
+            e.device = 0;
+        return true;
+    }
+    bool stat(const std::string &p, Entry *out) const override
+    {
+        if (!inner_.stat(p, out))
+            return false;
+        out->device = 0;
+        return true;
+    }
+    bool space(const std::string &p, SpaceInfo *out) const override
+    {
+        return inner_.space(p, out);
+    }
+    bool read_file(const std::string &p, std::string *out, std::size_t max) const override
+    {
+        return inner_.read_file(p, out, max);
+    }
+    bool mount_point(const std::string &p, std::string *out) const override
+    {
+        return inner_.mount_point(p, out);
+    }
+    bool remove_file(const std::string &p, int *error) const override
+    {
+        return inner_.remove_file(p, error);
+    }
+    bool remove_folder(const std::string &p, int *error) const override
+    {
+        return inner_.remove_folder(p, error);
+    }
+
+  private:
+    const FileSystem &inner_;
+};
+
+TEST(FixtureDeleter, MountNamesTellMountsApartWhenDevicesDoNot)
+{
+    const auto inner = make_fixture_filesystem();
+    SameDeviceFileSystem fs(*inner);
+    const std::string root = kFixtureRoot;
+    DeleteOptions options;
+    options.rules = fixture_rules();
+    options.jobs = {folder_job(root + "/mnt_other", root)};
+    const auto results = run(fs, std::move(options));
+    ASSERT_EQ(results.size(), 1u);
+    EXPECT_EQ(results[0].outcome, Outcome::failed);
+    EXPECT_EQ(results[0].error, EXDEV);
+    Entry still;
+    EXPECT_TRUE(fs.stat(root + "/mnt_other/huge/elsewhere.bin", &still));
+}
+
 class OwnedFileSystem final : public FileSystem
 {
   public:

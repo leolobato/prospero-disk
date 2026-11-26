@@ -70,6 +70,15 @@ class FileSystem
         *error = EROFS;
         return false;
     }
+    // Where the file system that holds a folder is mounted (statfs's
+    // f_mntonname). On the console several file systems report st_dev 0, so
+    // the device alone cannot tell a mount point; false when unknown.
+    virtual bool mount_point(const std::string &path, std::string *out) const
+    {
+        (void)path;
+        (void)out;
+        return false;
+    }
     // Moves an entry within one file system (rename), never over another.
     virtual bool move(const std::string &from, const std::string &to, int *error) const
     {

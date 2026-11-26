@@ -227,6 +227,16 @@ bool Deleter::move(const std::string &from, const std::string &to, int *error) c
     return ok;
 }
 
+std::string Deleter::mount_of(const std::string &path) const
+{
+    std::string name;
+    if (fs_->mount_point(path, &name))
+        return name;
+    if (options_.privileged)
+        options_.privileged([&] { return fs_->mount_point(path, &name); });
+    return name;
+}
+
 bool Deleter::checked_ancestors(const std::string &path, const std::string &volume_root,
                                 ItemResult &result)
 {
@@ -281,9 +291,13 @@ bool Deleter::remove_tree(const std::string &path, const std::string &volume_roo
         fail(result, parent_of(path), error);
         return false;
     }
-    if (top.device != parent.device)
+    // A mount point: another drive, never ours to empty. The console reports
+    // st_dev 0 for several file systems, so the mount names are compared too.
+    const std::string mount = top.type == EntryType::directory ? mount_of(path) : std::string();
+    const std::string parent_mount = mount.empty() ? std::string() : mount_of(parent_of(path));
+    if (top.device != parent.device || (!parent_mount.empty() && mount != parent_mount))
     {
-        fail(result, path, EXDEV); // a mount point: another drive, never ours to empty
+        fail(result, path, EXDEV);
         return false;
     }
     if (top.type != EntryType::directory)
@@ -333,7 +347,8 @@ bool Deleter::remove_tree(const std::string &path, const std::string &volume_roo
                 const std::string child = child_path(folder, e.name);
                 if (e.type == EntryType::directory)
                 {
-                    if (e.device != device)
+                    const std::string child_mount = mount.empty() ? mount : mount_of(child);
+                    if (e.device != device || (!child_mount.empty() && child_mount != mount))
                     {
                         fail(result, child, EXDEV); // a drive mounted inside: left alone
                         blocked = true;

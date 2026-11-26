@@ -134,6 +134,36 @@ std::string probe_storage(bool elevated, const std::function<void(const std::str
     budget = 3;
     probe_blocks(out, "/mnt/usb0", 2, &budget);
 
+    // Several file systems report st_dev 0 here, so the deleter also compares
+    // mount names: which folders inside a volume are mounts of their own?
+    if (elevated)
+    {
+        const auto fs = disk::make_posix_filesystem(true);
+        for (const disk::VolumeSpec &spec : disk::console_volume_specs())
+        {
+            std::string mount;
+            line(out, "  mount %s", spec.path.c_str());
+            if (!fs->mount_point(spec.path, &mount))
+                continue;
+            line(out, "mount %s on %s", spec.path.c_str(), mount.c_str());
+            DIR *dir = opendir(spec.path.c_str());
+            if (dir == nullptr)
+                continue;
+            std::vector<std::string> names;
+            for (dirent *d = readdir(dir); d != nullptr; d = readdir(dir))
+                if (d->d_name[0] != '.' && d->d_type == DT_DIR)
+                    names.emplace_back(d->d_name);
+            closedir(dir);
+            for (const std::string &name : names)
+            {
+                const std::string path = spec.path + "/" + name;
+                std::string inner;
+                if (fs->mount_point(path, &inner) && inner != mount)
+                    line(out, "mount %s on %s (a mount of its own)", path.c_str(), inner.c_str());
+            }
+        }
+    }
+
     line(out, "getfsstat not called: a libkernel_sys import, like statfs");
     g_emit = nullptr;
     return out;

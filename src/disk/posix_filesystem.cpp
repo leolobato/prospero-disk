@@ -174,6 +174,34 @@ class PosixFileSystem final : public FileSystem
         return false;
     }
 
+    bool mount_point(const std::string &path, std::string *out) const override
+    {
+#if defined(__PROSPERO__)
+        if (!allow_space_)
+            return false;
+        const Fstatfs query = resolved_fstatfs();
+        if (query == nullptr)
+            return false;
+        const int fd = open(path.c_str(), O_RDONLY | O_DIRECTORY);
+        if (fd < 0)
+            return false;
+        struct statfs info;
+        std::memset(&info, 0, sizeof info);
+        const bool ok = query(fd, &info) == 0;
+        close(fd);
+        if (!ok)
+            return false;
+        info.f_mntonname[sizeof info.f_mntonname - 1] = 0;
+        *out = info.f_mntonname;
+        return !out->empty();
+#else
+        // Linux's statfs has no mount name; st_dev tells mounts apart there.
+        (void)path;
+        (void)out;
+        return false;
+#endif
+    }
+
     bool space(const std::string &path, SpaceInfo *out) const override
     {
         if (!allow_space_)

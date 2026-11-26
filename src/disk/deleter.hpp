@@ -137,6 +137,8 @@ class Deleter
     bool list(const std::string &path, std::vector<Entry> *out, int *error) const;
     bool remove(const std::string &path, bool folder, int *error) const;
     bool move(const std::string &from, const std::string &to, int *error) const;
+    // The mount a folder is on ("" when the file system cannot say).
+    std::string mount_of(const std::string &path) const;
     void fail(ItemResult &result, const std::string &path, int error);
     void set_current(const std::string &text);
 

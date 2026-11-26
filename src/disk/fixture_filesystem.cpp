@@ -183,6 +183,18 @@ class FixtureFileSystem final : public FileSystem
         return false;
     }
 
+    // Every device is its own mount, named by the folder it starts at.
+    bool mount_point(const std::string &path, std::string *out) const override
+    {
+        Entry e;
+        if (!stat(path, &e) || e.type != EntryType::directory)
+            return false;
+        *out = e.device == 3   ? kFixtureUsbRoot
+               : e.device == 2 ? "/fixture/user/mnt_other"
+                               : kFixtureRoot;
+        return true;
+    }
+
     bool remove_file(const std::string &path, int *error) const override
     {
         std::lock_guard<std::mutex> data(data_mutex_);
