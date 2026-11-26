@@ -223,14 +223,16 @@ the brief's questions:
 - Retail: the system removes `app`, `patch`, `addcont` and appmeta together
   (to be confirmed on the console: what is left behind is measured by a
   rescan of those folders).
-- **Playden games — needs the owner's answer.** Uninstalling the `FAKE78xxx`
-  title unregisters the tile. Playden's own uninstall also removes the game's
-  Windows folder (`/data/playden/games/<id>`), keeps or deletes saves, syncs
-  Cloud saves and retires `/data/homebrew/FAKE78xxx`. Question: should
-  Prospero Disk (a) only unregister the title and then delete the game folder
-  and the title folder, leaving Playden's records to notice the game is gone,
-  or (b) only unregister and leave the files for Playden? Saves are the risk
-  in (a).
+- **Playden games (the owner, 2026-11-26).** What is deleted follows what
+  was collected:
+  - the title (`/data/homebrew/FAKE78xxx`): uninstall the title through the
+    system, then delete its folder;
+  - the game data (`/data/playden/games/<id>`, the folder `playden_titles`
+    maps to that title): delete the game data, and uninstall and delete its
+    title as above.
+  The game data is deleted only after the title is confirmed gone from
+  `app.db`, so a refused uninstall leaves both in place. Playden's own records
+  are not edited.
 - Console runs: **run 3** resolves nothing new in our process (the call is in
   the payload) but sends the payload with a request for a throwaway homebrew
   title the owner picks and checks `app.db`; **run 4** a retail title the
