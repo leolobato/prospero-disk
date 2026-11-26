@@ -286,6 +286,9 @@ TEST(DiskSunburst, RingsFillTheCircleAndMergeSlivers)
             ring1 += s.sweep;
             smaller += s.kind == SegmentKind::smaller ? 1 : 0;
             hidden += s.kind == SegmentKind::hidden ? 1 : 0;
+            // The centre's own group is in no branch, unlike "big" (branch 0).
+            if (s.kind == SegmentKind::smaller)
+                EXPECT_EQ(s.branch, -1);
         }
     EXPECT_NEAR(ring1, 6.2831853f, 1e-3f);
     EXPECT_EQ(smaller, 1);

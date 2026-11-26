@@ -53,6 +53,9 @@ const Color kFaint = Color::rgb(0x6b7398);
 const Color kAccent = Color::rgb(0x5ec8ff);
 const Color kWarn = Color::rgb(0xffb35c);
 const Color kSmaller = Color::rgb(0x59607a);
+// A "smaller items" group is drawn as slices of the layout's merge threshold.
+const float kSliceSweep = dk::SunburstOptions{}.min_sweep;
+constexpr float kSliceGap = 0.005f; // radians: 1 to 2 px from the inner to the outer ring
 const Color kHiddenA = Color::rgb(0x343a52);
 const Color kHiddenB = Color::rgb(0x4a5170);
 const Color kCore = Color::rgb(0x151a30, 0.94f);
@@ -1079,9 +1082,22 @@ class Disk final : public app::Concept
                 }
                 continue;
             }
-            const Color c =
-                s.kind == dk::SegmentKind::smaller ? kSmaller : branch_colour(s.branch, s.ring);
-            list.arc(cx, cy, outer, kRing, s.start, sweep, c.with_alpha(alpha), false);
+            if (s.kind == dk::SegmentKind::smaller)
+            {
+                // Many items each too thin to draw: 1° slices say "lots of small
+                // things", and the muted branch colour says whose they are.
+                const Color c = s.branch >= 0
+                                    ? gfx::mix(branch_colour(s.branch, s.ring), kSmaller, 0.5f)
+                                    : kSmaller;
+                const int slices = std::max(1, static_cast<int>(sweep / kSliceSweep));
+                const float step = sweep / static_cast<float>(slices);
+                for (int i = 0; i < slices; ++i)
+                    list.arc(cx, cy, outer, kRing, s.start + step * static_cast<float>(i),
+                             step - kSliceGap, c.with_alpha(alpha), false);
+                continue;
+            }
+            list.arc(cx, cy, outer, kRing, s.start, sweep,
+                     branch_colour(s.branch, s.ring).with_alpha(alpha), false);
         }
         list.circle(cx, cy, kCoreRadius - 6.0f, kCore);
         list.ring(cx, cy, kCoreRadius - 6.0f, 2.0f, Color::rgb(0xffffff, 0.08f));

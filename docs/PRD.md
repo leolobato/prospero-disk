@@ -88,8 +88,10 @@ Layout (1920×1080 virtual canvas, scaled to the surface):
 
 - **Sunburst** (left). The centre disc is the current folder, with its name and
   size. Each ring is one depth level, and a segment's angle is proportional to
-  its size. Segments under ~1° merge into one grey "smaller items" segment per
-  parent. Colour follows the top-level branch, and lightness drops with depth.
+  its size. Segments under ~1° merge into one "smaller items" segment per
+  parent, drawn as 1° slices in its branch's colour mixed halfway to grey (plain
+  grey on the first ring). Colour follows the top-level branch, and lightness
+  drops with depth.
 - **List** (right). The children of the current folder, sorted by size
   (descending) by default, with a proportional bar behind each row. Triangle
   switches to sorting by name.

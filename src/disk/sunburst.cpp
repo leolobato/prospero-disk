@@ -60,7 +60,9 @@ std::vector<Segment> layout_sunburst(const Tree &tree, std::uint32_t centre,
         return out;
 
     // Breadth first, so each ring is contiguous in the result.
-    std::vector<Pending> level{{centre, 0, 0.0f, kTau}};
+    // The centre belongs to no branch: its "smaller" group on the first ring
+    // must not light up with branch 0 when that branch has the focus.
+    std::vector<Pending> level{{centre, -1, 0.0f, kTau}};
     for (int ring = 1; ring <= options.rings && !level.empty(); ++ring)
     {
         std::vector<Pending> next;
