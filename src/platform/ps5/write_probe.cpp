@@ -193,7 +193,13 @@ void location(Probe &p, const std::string &target, const std::string &stamp)
         return;
     const std::string dir = target + "/.pd-probe-" + stamp;
     const std::string file = dir + "/probe.bin";
-    clear(p, dir, "probe.bin");
+    // Only what this run creates is removed: a name that is already taken
+    // (looked up as root where the folder can't be searched) is left alone.
+    if (p.step("lstat", dir, 0, [&] { return exists(dir); }) == 0)
+    {
+        p.line("result %s skipped: %s already exists", target.c_str(), dir.c_str());
+        return;
+    }
     uid_t maker = p.user();
     if (p.step("mkdir", dir, maker, [&] { return make_dir(dir, 0755); }) != 0)
     {

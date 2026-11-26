@@ -31,6 +31,8 @@ std::string root_of(const ProtectionRules &rules, const std::string &path)
     return best;
 }
 
+std::atomic<int> g_running{0};
+
 std::string parent_of(const std::string &path)
 {
     const std::size_t slash = path.find_last_of('/');
@@ -45,6 +47,11 @@ std::string child_path(const std::string &folder, const std::string &name)
 }
 
 } // namespace
+
+bool deletion_running()
+{
+    return g_running.load() != 0;
+}
 
 Deleter::~Deleter()
 {
@@ -75,6 +82,7 @@ bool Deleter::start(const FileSystem &fs, DeleteOptions options)
         current_.clear();
     }
     running_ = true;
+    ++g_running;
     thread_ = std::thread([this] { run(); });
     return true;
 }
@@ -141,6 +149,7 @@ void Deleter::run()
     set_current({});
     finished_ = true;
     running_ = false;
+    --g_running;
 }
 
 void Deleter::fail(ItemResult &result, const std::string &path, int error)

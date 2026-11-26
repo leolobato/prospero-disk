@@ -792,6 +792,8 @@ class Disk final : public app::Concept
 
     void handle_scanning(const InputFrame &input, app::Feedback &feedback, float dt)
     {
+        if (input.is_pressed(Action::r3))
+            open_drawer(feedback);
         scan_age_ += dt;
         scan_refresh_ -= dt;
         if (scan_refresh_ <= 0.0f)
@@ -1086,7 +1088,7 @@ class Disk final : public app::Concept
         };
         if (r.kind == dk::SegmentKind::hidden)
             return refuse("System & hidden is space the scan can't see: it can't be collected.");
-        if (r.node == dk::kNoNode)
+        if (r.node == dk::kNoNode || r.node >= v.tree->size())
             return refuse("This can't be collected.");
         if (r.node_kind == dk::Kind::other_files)
             return refuse("Smaller files can only be collected with their folder.");
@@ -1127,7 +1129,7 @@ class Disk final : public app::Concept
         for (std::size_t i = 0; i < view_.segments.size(); ++i)
         {
             const dk::Segment &seg = view_.segments[i];
-            if (seg.kind == dk::SegmentKind::node && seg.node != dk::kNoNode)
+            if (seg.kind == dk::SegmentKind::node && seg.node < v.tree->size())
                 view_.collected[i] =
                     collection_.covering(canonical(v.tree->path(seg.node))) != nullptr;
         }
@@ -1163,6 +1165,28 @@ class Disk final : public app::Concept
         else
         {
             const dk::Check check = dk::check_path(env_.protection, key);
+            // One uninstall per title: a Playden game's data and its title
+            // folder are one job. The one that removes more replaces the other.
+            if (check.verdict == dk::Verdict::title)
+                for (const dk::CollectedItem *other : collection_.sorted())
+                {
+                    if (other->kind != dk::ItemKind::title || other->title_id != check.title_id)
+                        continue;
+                    const bool covers = std::all_of(
+                        other->then_delete.begin(), other->then_delete.end(),
+                        [&](const std::string &p)
+                        {
+                            return std::find(check.then_delete.begin(), check.then_delete.end(),
+                                             p) != check.then_delete.end();
+                        });
+                    if (!covers)
+                    {
+                        refuse_with("Already collected with " + leaf(other->path) + ".", feedback);
+                        return;
+                    }
+                    collection_.remove(std::string(other->key));
+                    break;
+                }
             dk::CollectedItem item;
             item.key = key;
             item.path = path;
@@ -1200,7 +1224,8 @@ class Disk final : public app::Concept
                     }
                 return true; // no tree shows it: keep it as it was
             });
-        refresh_marks();
+        // The marks are refreshed by whoever rebuilds the view: after a rescan
+        // the rows still point into the old tree.
     }
 
     // What is collected on one volume (any spelling inside its folder).
@@ -1362,6 +1387,12 @@ class Disk final : public app::Concept
 
     void open_confirm(app::Feedback &feedback)
     {
+        // One thing at a time: the scan finishes before anything is deleted.
+        if (screen_ == Screen::scanning || screen_ == Screen::loading)
+        {
+            refuse_with("Wait for the scan to finish, then delete.", feedback);
+            return;
+        }
         const std::vector<dk::DriveTotal> drives = collection_.drives();
         std::string where;
         for (std::size_t i = 0; i < drives.size(); ++i)
@@ -1494,14 +1525,14 @@ class Disk final : public app::Concept
         }
         // statfs before, per drive, for the result: what really came free.
         space_before_.clear();
-        for (const dk::DriveTotal &d : collection_.drives())
+        for (const std::string &drive : drives_touched())
             for (const VolumeState &v : volumes_)
             {
                 dk::SpaceInfo space;
-                if (dk::drive_of(v.volume.spec) == d.drive &&
+                if (dk::drive_of(v.volume.spec) == drive &&
                     env_.fs->space(v.volume.spec.path, &space))
                 {
-                    space_before_[d.drive] = space;
+                    space_before_[drive] = space;
                     break;
                 }
             }
@@ -1510,6 +1541,34 @@ class Disk final : public app::Concept
         delete_age_ = 0.0f;
         set_bar_focus(false);
         feedback.play(audio::Cue::launch);
+    }
+
+    // The drive a path is on, by the volume that holds it ("" when none does).
+    std::string drive_of_path(const std::string &path) const
+    {
+        const std::string root = volume_root_of(path);
+        for (const VolumeState &v : volumes_)
+            if (v.volume.spec.path == root)
+                return dk::drive_of(v.volume.spec);
+        return {};
+    }
+
+    // Every drive a deletion may change: the items' own, and those of the
+    // folders that go with a title (a Playden game on USB, its title on Internal).
+    std::set<std::string> drives_touched() const
+    {
+        std::set<std::string> drives;
+        for (const dk::CollectedItem *item : collection_.sorted())
+        {
+            drives.insert(item->drive);
+            for (const std::string &path : item->then_delete)
+                if (const std::string d = drive_of_path(path); !d.empty())
+                    drives.insert(d);
+            if (item->kind == dk::ItemKind::title)
+                if (const std::string d = drive_of_path("/user/app/" + item->title_id); !d.empty())
+                    drives.insert(d);
+        }
+        return drives;
     }
 
     // The volume an item was collected from: the deepest one holding its path.
@@ -1545,6 +1604,19 @@ class Disk final : public app::Concept
         delete_age_ += dt;
         if (delete_pending_)
         {
+            // Stopped before the first item: nothing starts.
+            if (input.is_pressed(Action::back))
+            {
+                delete_pending_ = false;
+                screen_ = delete_return_;
+                if (screen_ == Screen::explore)
+                    recentre();
+                else
+                    back_to_volumes(static_cast<std::size_t>(std::max(0, volume_list_.focus())));
+                feedback.play(audio::Cue::back);
+                toasts_.push(ui::StatusKind::info, "Stopped. Nothing was deleted.");
+                return;
+            }
             // A cache file still being written finishes first.
             if (!save_)
                 start_deleter();
@@ -1591,6 +1663,12 @@ class Disk final : public app::Concept
             if (r.outcome == dk::Outcome::skipped || r.outcome == dk::Outcome::failed)
                 continue;
             drives.insert(r.item.drive);
+            for (const std::string &path : r.item.then_delete)
+                if (const std::string d = drive_of_path(path); !d.empty())
+                    drives.insert(d);
+            if (r.item.kind == dk::ItemKind::title)
+                if (const std::string d = drive_of_path("/user/app/" + r.item.title_id); !d.empty())
+                    drives.insert(d);
             if (r.outcome == dk::Outcome::partly && r.left)
             {
                 // What is left of the folder, as a scan of it found.
@@ -1618,8 +1696,9 @@ class Disk final : public app::Concept
             std::vector<std::string> gone = r.item.then_delete;
             if (r.item.kind == dk::ItemKind::title)
                 for (const VolumeState &v : volumes_)
-                    for (const char *folder : {"/patch/", "/addcont/", "/appmeta/", "/user/patch/",
-                                               "/user/addcont/", "/user/app/"})
+                    for (const char *folder : {"/app/", "/patch/", "/addcont/", "/appmeta/",
+                                               "/appmeta/external/", "/user/app/", "/user/patch/",
+                                               "/user/addcont/", "/user/appmeta/external/"})
                         gone.push_back(v.volume.spec.path + folder + r.item.title_id);
             for (const std::string &path : gone)
             {
@@ -1646,10 +1725,17 @@ class Disk final : public app::Concept
         for (std::size_t i = 0; i < volumes_.size(); ++i)
         {
             VolumeState &v = volumes_[i];
+            // Saves queued before the deletion would bring deleted entries back.
+            if (edited.count(i) != 0)
+                std::erase_if(pending_saves_, [&](const PendingSave &p)
+                              { return p.info.volume_key == v.volume.spec.key; });
             if (edited.count(i) != 0 && !v.partial && !env_.cache_dir.empty())
                 pending_saves_.push_back({v.info, std::make_shared<dk::Tree>(v.tree->compacted())});
-            else if (!v.tree && v.cached && drives.count(dk::drive_of(v.volume.spec)) != 0)
+            else if ((edited.count(i) != 0 && v.partial && v.cached) ||
+                     (!v.tree && v.cached && drives.count(dk::drive_of(v.volume.spec)) != 0))
             {
+                // A partial scan is never cached, and the file on disk is older
+                // than the deletion: it goes.
                 std::remove(dk::cache_path(env_.cache_dir, v.volume.spec.key).c_str());
                 v.cached = false;
             }

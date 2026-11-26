@@ -148,6 +148,23 @@ TEST(FixtureRemoval, FreesSpaceAndKeepsTheRules)
     EXPECT_EQ(error, ENOENT);
 }
 
+TEST(FixtureRemoval, AMoveTakesContentsAlong)
+{
+    const auto fs = make_fixture_filesystem();
+    const std::string root = kFixtureRoot;
+    int error = 0;
+    ASSERT_TRUE(fs->move(root + "/appmeta/PPSA10021", root + "/download/moved", &error));
+    std::string text;
+    EXPECT_TRUE(fs->read_file(root + "/download/moved/param.json", &text, 4096));
+    EXPECT_NE(text.find("Starlight Courier"), std::string::npos);
+    EXPECT_FALSE(fs->read_file(root + "/appmeta/PPSA10021/param.json", &text, 4096));
+    // And back, as a refused uninstall does.
+    ASSERT_TRUE(fs->move(root + "/download/moved", root + "/appmeta/PPSA10021", &error));
+    EXPECT_TRUE(fs->read_file(root + "/appmeta/PPSA10021/param.json", &text, 4096));
+    EXPECT_FALSE(fs->move(root + "/nothing", root + "/download/x", &error));
+    EXPECT_EQ(error, ENOENT);
+}
+
 TEST(FixtureRemoval, UsbSpaceIsItsOwn)
 {
     const auto fs = make_fixture_filesystem();

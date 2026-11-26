@@ -100,6 +100,10 @@ struct DeleteProgress
     bool stopping = false;
 };
 
+// True while any Deleter's worker runs: the main loop then writes no file
+// (the effective uid may be raised for a moment) and does not quit midway.
+bool deletion_running();
+
 // Usage:
 //   Deleter deleter;
 //   deleter.start(fs, options);

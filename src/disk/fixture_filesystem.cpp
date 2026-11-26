@@ -263,6 +263,21 @@ class FixtureFileSystem final : public FileSystem
         }
         for (auto &moved_dir : renamed)
             dirs_[moved_dir.first] = std::move(moved_dir.second);
+        // Every map keyed by path moves too, or stat and read_file disagree.
+        const auto rekey = [&](const std::string &key) -> std::string
+        {
+            if (key == from || key.rfind(from + "/", 0) == 0)
+                return to + key.substr(from.size());
+            return key;
+        };
+        std::map<std::string, std::string> contents;
+        for (auto &c : contents_)
+            contents[rekey(c.first)] = std::move(c.second);
+        contents_ = std::move(contents);
+        std::set<std::string> unreadable;
+        for (const std::string &u : unreadable_)
+            unreadable.insert(rekey(u));
+        unreadable_ = std::move(unreadable);
         return true;
     }
 
@@ -543,7 +558,7 @@ class FixtureFileSystem final : public FileSystem
     mutable std::mutex data_mutex_;
     mutable std::map<std::string, std::vector<Entry>> dirs_;
     mutable std::map<std::string, std::string> contents_;
-    std::set<std::string> unreadable_;
+    mutable std::set<std::string> unreadable_;
     mutable std::uint64_t usb_used_ = 1ull << 30; // the file system's own share
     mutable std::uint64_t internal_used_ = 602 * kGB;
 };

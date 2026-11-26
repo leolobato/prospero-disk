@@ -7,6 +7,7 @@
 // markers and frame pacing are logged for hardware runs.
 
 #include "app/shell.hpp"
+#include "disk/deleter.hpp"
 #include "disk/volumes.hpp"
 #include "app/tour.hpp"
 #include "audio/cues.hpp"
@@ -37,6 +38,7 @@
 #include <unistd.h>
 #include <GL/glcorearb.h>
 
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
@@ -51,6 +53,10 @@ extern "C" void hui_heap_stats(std::size_t *live_bytes, std::size_t *peak_bytes,
 
 namespace
 {
+
+// Set when the effective uid could not be put back after a removal: the
+// process is root from then on, so the main loop stops too.
+std::atomic<bool> g_uid_lost{false};
 
 const char *elevation_status_name(elevation::Status status)
 {
@@ -328,9 +334,11 @@ int main()
                 const int error = errno;
                 if (seteuid(original_uid) != 0)
                 {
-                    // Anything after this would run as root: stop this thread.
+                    // Anything after this would run as root: stop this thread,
+                    // and the main loop with it.
                     sys::log("[HUI] fatal: effective uid restore failed after a removal (%d)",
                              errno);
+                    g_uid_lost = true;
                     sys::park();
                 }
                 errno = error;
@@ -405,6 +413,8 @@ int main()
         access((paths.app + "/dev/write-probe").c_str(), F_OK) == 0 &&
         access((paths.data + "/write-probe.txt").c_str(), F_OK) != 0)
     {
+        // Written first, so a probe that ends the process does not run again.
+        (void)save::write_atomic(paths.data + "/write-probe.txt", "write probe started\n");
         const std::string report = ps5::probe_writes(
             paths.data, original_uid,
             [started_us](const std::string &text)
@@ -663,7 +673,13 @@ int main()
         }
         if (collect_wait >= 0.0)
             collect_wait += static_cast<double>(frame_ms) / 1000.0;
-        if (frames % 60 == 0)
+        if (g_uid_lost)
+        {
+            sys::log("[HUI] fatal: parked, the effective uid is lost");
+            sys::park();
+        }
+        // Requests write a file and may quit: not while a deletion runs.
+        if (frames % 60 == 0 && !disk::deletion_running())
         {
             poll_request();
             if (quit_requested || collect_wait > kCollectSeconds)

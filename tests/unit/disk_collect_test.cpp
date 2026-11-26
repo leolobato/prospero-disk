@@ -171,4 +171,22 @@ TEST_F(DiskCollect, HoldingTwoSecondsDeletesAndShowsTheResult)
     EXPECT_TRUE(played(Cue::error));
 }
 
+TEST_F(DiskCollect, RescanAfterADeletionRebuildsTheView)
+{
+    // Delete "home" (many nodes), then rescan: the rows of the old tree must
+    // not be read against the new, smaller one (the sanitizers would say).
+    down(3);
+    send(*design_, press(Action::jump_next), 0.2f);
+    ASSERT_TRUE(played(Cue::favorite_on));
+    open_hold();
+    hold(action_bit(Action::confirm), 2.3f);
+    settle(2.0f);
+    send(*design_, press(Action::confirm), 0.5f); // OK
+    send(*design_, press(Action::west), 0.2f);    // rescan
+    settle(1.5f);
+    expect_drawable(*design_);
+    send(*design_, nav(Direction::down), 0.2f);
+    expect_drawable(*design_);
+}
+
 } // namespace
