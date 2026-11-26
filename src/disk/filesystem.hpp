@@ -70,6 +70,14 @@ class FileSystem
         *error = EROFS;
         return false;
     }
+    // Moves an entry within one file system (rename), never over another.
+    virtual bool move(const std::string &from, const std::string &to, int *error) const
+    {
+        (void)from;
+        (void)to;
+        *error = EROFS;
+        return false;
+    }
     // The screen's clock moved on: a paced fixture lets more folders through.
     virtual void advance(double seconds) const
     {

@@ -7,6 +7,7 @@
 #include "disk/title_remover.hpp"
 #include "disk/titles.hpp"
 
+#include <cerrno>
 #include <chrono>
 #include <cstdlib>
 #include <thread>
@@ -127,6 +128,7 @@ ProtectionRules console_protection(const std::vector<VolumeSpec> &specs,
         {"/mnt/ext0/user/appmeta", meta},
         {"/mnt/ext1/user/appmeta", meta},
         {"/data/homebrew/PPSA93475", own},
+        {"/user/app/PPSA93475", own}, // the console's registration of Prospero Disk
         {"/data/prospero-disk", own},
         {"/data/homebrew/FAKE77031", "Uninstall Playden from its own settings."},
     };
@@ -183,9 +185,39 @@ Environment make_environment()
         TitleRemoverConfig remover;
         remover.payload = "/data/homebrew/PPSA93475/title-remover.elf";
         remover.send = send_to_payload_loader;
-        const std::string app_db = env.app_db;
-        remover.listed = [app_db](const std::string &id)
-        { return !title_name_from_app_db(app_db, id).empty(); };
+        // As Playden checks: the title is there while its app folder is. The
+        // M.2 app folders are root's 0770, so a refusal is asked again raised.
+        const FileSystem *fs = env.fs.get();
+        const Privileged privileged = env.privileged;
+        remover.presence = [fs, privileged](const std::string &id)
+        {
+            bool unknown = false;
+            for (const char *root : {"/user/app/", "/mnt/ext0/user/app/", "/mnt/ext1/user/app/"})
+            {
+                const std::string path = root + id;
+                Entry e;
+                if (fs->stat(path, &e))
+                    return TitlePresence::listed;
+                int error = errno;
+                if ((error == EACCES || error == EPERM) && privileged)
+                {
+                    bool found = false;
+                    privileged(
+                        [&]
+                        {
+                            found = fs->stat(path, &e);
+                            error = found ? 0 : errno;
+                            return found;
+                        });
+                    if (found)
+                        return TitlePresence::listed;
+                }
+                // The M.2 folders exist without a drive: ENOENT there is "not here".
+                if (error != ENOENT && error != ENOTDIR)
+                    unknown = true;
+            }
+            return unknown ? TitlePresence::unknown : TitlePresence::gone;
+        };
         remover.sleep = [](int ms) { std::this_thread::sleep_for(std::chrono::milliseconds(ms)); };
         env.remover = std::make_shared<PayloadTitleRemover>(std::move(remover));
     }

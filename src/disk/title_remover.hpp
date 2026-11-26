@@ -7,12 +7,23 @@
 #include "disk/deleter.hpp"
 #include "disk/filesystem.hpp"
 
+#include <cstdint>
 #include <functional>
 #include <memory>
 #include <string>
 
 namespace hui::disk
 {
+
+// Whether the console still has a title. Unknown (a folder that could not be
+// checked) is never taken for gone: a Playden game's data is deleted only
+// once its title is.
+enum class TitlePresence : std::uint8_t
+{
+    listed,
+    gone,
+    unknown,
+};
 
 // The app cannot load libSceAppInstUtil itself (Playden found the same), so
 // it writes a request, sends tools/title-remover to the payload loader on
@@ -25,8 +36,9 @@ struct TitleRemoverConfig
     std::string payload; // the ELF, in the install folder
     // Sends the ELF's bytes to the payload loader; false with a reason.
     std::function<bool(const std::string &elf, std::string *error)> send;
-    // Whether the console still lists the title (app.db).
-    std::function<bool(const std::string &title_id)> listed;
+    // Whether the console still has the title (its /user/app folder, as
+    // Playden checks).
+    std::function<TitlePresence(const std::string &title_id)> presence;
     std::function<void(int milliseconds)> sleep;
     int answer_polls = 60; // x answer_ms: how long the payload may take to answer
     int answer_ms = 250;

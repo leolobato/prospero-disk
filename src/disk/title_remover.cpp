@@ -147,6 +147,14 @@ UninstallResult PayloadTitleRemover::uninstall(const std::string &title_id)
 {
     UninstallResult r;
     const std::string &dir = config_.request_dir;
+    const TitlePresence before =
+        config_.presence ? config_.presence(title_id) : TitlePresence::unknown;
+    if (before != TitlePresence::listed)
+    {
+        r.reason = before == TitlePresence::gone ? "The console does not have this title."
+                                                 : "Prospero Disk could not check this title.";
+        return r;
+    }
     if (!ready_folder(dir))
     {
         r.reason = "The title remover's folder is not Prospero Disk's.";
@@ -207,7 +215,7 @@ UninstallResult PayloadTitleRemover::uninstall(const std::string &title_id)
     // Accepted: the system finishes on its own time.
     for (int poll = 0; poll < config_.confirm_polls; ++poll)
     {
-        if (!config_.listed || !config_.listed(title_id))
+        if (config_.presence(title_id) == TitlePresence::gone)
         {
             r.ok = true;
             return r;

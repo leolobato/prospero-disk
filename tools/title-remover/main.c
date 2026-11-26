@@ -12,7 +12,7 @@
 // The folder and the request must belong to the same user, who is not root
 // (the app writes them as its own user; /data/prospero-disk itself is
 // root's), must not be links, and the request has one link. The title must
-// be a retail game (PPSA/CUSA and five digits) or one of Playden's game titles
+// be a PS5 game (PPSA and five digits) or one of Playden's game titles
 // (FAKE78 and three digits), never Prospero Disk itself. The answer goes next
 // to the request, written as that user:
 //
@@ -45,7 +45,7 @@ static int digits(const char *text, size_t count) {
 
 static int valid_title(const char *title) {
   if (strlen(title) != 9 || strcmp(title, SELF_TITLE) == 0) return 0;
-  if (strncmp(title, "PPSA", 4) == 0 || strncmp(title, "CUSA", 4) == 0) return digits(title + 4, 5);
+  if (strncmp(title, "PPSA", 4) == 0) return digits(title + 4, 5);
   if (strncmp(title, "FAKE78", 6) == 0) return digits(title + 6, 3);
   return 0;
 }

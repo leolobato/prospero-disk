@@ -153,6 +153,27 @@ class PosixFileSystem final : public FileSystem
         return false;
     }
 
+    bool move(const std::string &from, const std::string &to, int *error) const override
+    {
+        if (!allow_remove_)
+        {
+            *error = EROFS;
+            return false;
+        }
+        struct stat st
+        {
+        };
+        if (lstat(to.c_str(), &st) == 0)
+        {
+            *error = EEXIST;
+            return false;
+        }
+        if (rename(from.c_str(), to.c_str()) == 0)
+            return true;
+        *error = errno;
+        return false;
+    }
+
     bool space(const std::string &path, SpaceInfo *out) const override
     {
         if (!allow_space_)

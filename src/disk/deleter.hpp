@@ -55,8 +55,12 @@ struct DeleteOptions
     ProtectionRules rules;           // checked again for every item
     TitleRemover *remover = nullptr; // null: title items fail
     Privileged privileged;
-    // Walks and reports, removes nothing: a tour on real volumes.
+    // Walks and reports, removes nothing.
     bool dry_run = false;
+    // Where a Playden title's folder is moved before its title is uninstalled,
+    // so ShadowMount cannot find it again in /data/homebrew (Playden's order).
+    // Empty: it is deleted where it is, after the uninstall.
+    std::string trash_dir;
     std::function<void(const std::string &)> log; // one line per failure
 };
 
@@ -132,6 +136,7 @@ class Deleter
     bool stat(const std::string &path, Entry *out, int *error) const;
     bool list(const std::string &path, std::vector<Entry> *out, int *error) const;
     bool remove(const std::string &path, bool folder, int *error) const;
+    bool move(const std::string &from, const std::string &to, int *error) const;
     void fail(ItemResult &result, const std::string &path, int error);
     void set_current(const std::string &text);
 

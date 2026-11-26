@@ -270,6 +270,7 @@ TEST(Protection, RefusesWhatMustStay)
     EXPECT_EQ(verdict("/user/data/homebrew/PPSA93475/eboot.bin"), Verdict::protected_path);
     EXPECT_EQ(verdict("/user/data/prospero-disk/cache"), Verdict::protected_path);
     EXPECT_EQ(verdict("/data/homebrew/FAKE77031"), Verdict::protected_path);
+    EXPECT_EQ(verdict("/user/app/PPSA93475"), Verdict::protected_path);
     // A folder that holds a protected one is refused whole.
     EXPECT_EQ(verdict("/data/homebrew"), Verdict::contains_protected);
     EXPECT_EQ(verdict("/user/data"), Verdict::volume_root); // it is /data
@@ -289,12 +290,16 @@ TEST(Protection, GamesAreUninstalledNeverDeletedByHand)
     EXPECT_EQ(c.verdict, Verdict::title);
     EXPECT_EQ(c.title_id, "PPSA01467");
     EXPECT_TRUE(c.then_delete.empty());
-    c = check_path(rules, "/mnt/ext1/user/app/CUSA01047");
+    c = check_path(rules, "/mnt/ext1/user/app/PPSA15508");
     EXPECT_EQ(c.verdict, Verdict::title);
-    EXPECT_EQ(c.title_id, "CUSA01047");
+    EXPECT_EQ(c.title_id, "PPSA15508");
+    // PS4 games: not tried on a console yet, left to the home screen.
+    EXPECT_EQ(check_path(rules, "/mnt/ext1/user/app/CUSA01047").verdict, Verdict::title_part);
     EXPECT_EQ(check_path(rules, "/user/app/PPSA01467/sce_sys").verdict, Verdict::title_part);
     EXPECT_EQ(check_path(rules, "/user/app/FAKE10101").verdict, Verdict::title_part);
-    EXPECT_EQ(check_path(rules, "/user/app").verdict, Verdict::contains_titles);
+    // It holds Prospero Disk's own registration as well as games.
+    EXPECT_EQ(check_path(rules, "/user/app").verdict, Verdict::contains_protected);
+    EXPECT_EQ(check_path(rules, "/mnt/ext0/user/app").verdict, Verdict::contains_titles);
     // It holds appmeta as well as games: the first rule that refuses names it.
     EXPECT_EQ(check_path(rules, "/mnt/ext1/user").verdict, Verdict::contains_protected);
     EXPECT_EQ(check_path(rules, "/user/patch/PPSA01467").verdict, Verdict::title_part);
@@ -732,6 +737,48 @@ TEST(FixtureDeleter, StopsAfterTheItemAtWork)
     EXPECT_TRUE(fs->stat(root + "/download", &still));
 }
 
+// Playden's order on the fixture: a stand-in homebrew folder, a trash folder.
+TEST(FixtureDeleter, PlaydenTitleFolderIsMovedAsideFirst)
+{
+    const auto fs = make_fixture_filesystem();
+    const std::string root = kFixtureRoot;
+    ProtectionRules rules = fixture_rules();
+    rules.homebrew = root + "/home/10000000/savedata";
+    FakeRemover remover;
+    Entry seen;
+    // While the system uninstalls, the folder is no longer where ShadowMount looks.
+    remover.on_uninstall = [&]
+    { EXPECT_FALSE(fs->stat(root + "/home/10000000/savedata/FAKE78001", &seen)); };
+    int error = 0;
+    ASSERT_TRUE(fs->move(root + "/home/10000000/savedata/PPSA10021",
+                         root + "/home/10000000/savedata/FAKE78001", &error));
+    DeleteOptions options;
+    options.rules = rules;
+    options.remover = &remover;
+    options.trash_dir = root + "/download";
+    options.jobs = {title_job(rules, root + "/home/10000000/savedata/FAKE78001", root)};
+    ASSERT_EQ(options.jobs[0].item.title_id, "FAKE78001");
+    auto results = run(*fs, options);
+    ASSERT_EQ(results.size(), 1u);
+    EXPECT_EQ(results[0].outcome, Outcome::removed) << results[0].error_path;
+    EXPECT_EQ(remover.asked, std::vector<std::string>{"FAKE78001"});
+    EXPECT_FALSE(fs->stat(root + "/home/10000000/savedata/FAKE78001", &seen));
+    std::vector<Entry> trash;
+    ASSERT_TRUE(fs->list(root + "/download", &trash, &error));
+    for (const Entry &e : trash)
+        EXPECT_NE(e.name.rfind("FAKE78001", 0), 0u) << "left in the trash";
+
+    // Refused: the folder goes back where it was.
+    ASSERT_TRUE(fs->move(root + "/home/10000000/savedata/PPSA10388",
+                         root + "/home/10000000/savedata/FAKE78002", &error));
+    remover.answer = false;
+    remover.on_uninstall = nullptr;
+    options.jobs = {title_job(rules, root + "/home/10000000/savedata/FAKE78002", root)};
+    results = run(*fs, options);
+    EXPECT_EQ(results[0].outcome, Outcome::failed);
+    EXPECT_TRUE(fs->stat(root + "/home/10000000/savedata/FAKE78002/sdimg_save", &seen));
+}
+
 // ---- uninstalling through the system ----
 
 using PayloadClient = TempDir;
@@ -790,15 +837,20 @@ TEST_F(PayloadClient, SendsTheRequestAndReadsTheAnswer)
         std::fclose(f);
         return true;
     };
-    int listed_polls = 0;
-    config.listed = [&](const std::string &id)
+    int looks = 0;
+    config.presence = [&](const std::string &id)
     {
         EXPECT_EQ(id, "PPSA01467");
-        return ++listed_polls < 2; // gone on the second look
+        // Listed before; then unknown once (never taken for gone); then gone.
+        ++looks;
+        return looks <= 1   ? TitlePresence::listed
+               : looks == 2 ? TitlePresence::unknown
+                            : TitlePresence::gone;
     };
     PayloadTitleRemover remover(config);
     UninstallResult r = remover.uninstall("PPSA01467");
     EXPECT_TRUE(r.ok) << r.reason;
+    EXPECT_EQ(looks, 3);
     EXPECT_EQ(request.rfind("title=PPSA01467\nnonce=", 0), 0u);
     EXPECT_FALSE(exists("title-remover/request")); // cleaned up
     struct stat info
@@ -809,22 +861,48 @@ TEST_F(PayloadClient, SendsTheRequestAndReadsTheAnswer)
 
     // A refusal carries the console's code.
     answer = 0x80990001;
+    looks = 0;
     r = remover.uninstall("PPSA01467");
     EXPECT_FALSE(r.ok);
     EXPECT_NE(r.reason.find("0x80990001"), std::string::npos);
 
     // Accepted but never confirmed.
     answer = 0;
-    config.listed = [](const std::string &) { return true; };
+    config.presence = [](const std::string &) { return TitlePresence::listed; };
     PayloadTitleRemover stubborn(config);
     r = stubborn.uninstall("PPSA01467");
     EXPECT_FALSE(r.ok);
     EXPECT_NE(r.reason.find("not confirmed"), std::string::npos);
 }
 
+TEST_F(PayloadClient, NeverSendsForATitleItCannotSee)
+{
+    {
+        std::FILE *f = std::fopen(path("title-remover.elf").c_str(), "wb");
+        std::fputs("\x7f"
+                   "ELF",
+                   f);
+        std::fclose(f);
+    }
+    TitleRemoverConfig config = client_config(root_);
+    bool sent = false;
+    config.send = [&](const std::string &, std::string *)
+    {
+        sent = true;
+        return true;
+    };
+    // A failed check is not "gone", and not "listed" either.
+    config.presence = [](const std::string &) { return TitlePresence::unknown; };
+    EXPECT_FALSE(PayloadTitleRemover(config).uninstall("PPSA01467").ok);
+    config.presence = [](const std::string &) { return TitlePresence::gone; };
+    EXPECT_FALSE(PayloadTitleRemover(config).uninstall("PPSA01467").ok);
+    EXPECT_FALSE(sent);
+}
+
 TEST_F(PayloadClient, FailsCleanlyWithoutPayloadOrAnswer)
 {
     TitleRemoverConfig config = client_config(root_);
+    config.presence = [](const std::string &) { return TitlePresence::listed; };
     bool sent = false;
     config.send = [&](const std::string &, std::string *)
     {

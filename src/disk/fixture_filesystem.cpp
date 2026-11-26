@@ -212,6 +212,48 @@ class FixtureFileSystem final : public FileSystem
         return true;
     }
 
+    bool move(const std::string &from, const std::string &to, int *error) const override
+    {
+        std::lock_guard<std::mutex> data(data_mutex_);
+        std::vector<Entry> *siblings = nullptr;
+        const std::size_t at = find(from, &siblings, error);
+        if (at == kMissing)
+            return false;
+        std::vector<Entry> *target_siblings = nullptr;
+        int ignored = 0;
+        if (find(to, &target_siblings, &ignored) != kMissing)
+        {
+            *error = EEXIST;
+            return false;
+        }
+        const std::size_t slash = to.find_last_of('/');
+        const auto parent = dirs_.find(to.substr(0, slash));
+        if (slash == std::string::npos || parent == dirs_.end())
+        {
+            *error = ENOENT;
+            return false;
+        }
+        Entry moved = (*siblings)[at];
+        siblings->erase(siblings->begin() + static_cast<std::ptrdiff_t>(at));
+        moved.name = to.substr(slash + 1);
+        parent->second.push_back(moved);
+        // A folder takes everything below it along.
+        std::map<std::string, std::vector<Entry>> renamed;
+        for (auto it = dirs_.begin(); it != dirs_.end();)
+        {
+            if (it->first == from || it->first.rfind(from + "/", 0) == 0)
+            {
+                renamed[to + it->first.substr(from.size())] = std::move(it->second);
+                it = dirs_.erase(it);
+            }
+            else
+                ++it;
+        }
+        for (auto &moved_dir : renamed)
+            dirs_[moved_dir.first] = std::move(moved_dir.second);
+        return true;
+    }
+
     bool remove_folder(const std::string &path, int *error) const override
     {
         std::lock_guard<std::mutex> data(data_mutex_);

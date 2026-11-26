@@ -211,6 +211,22 @@ bool Deleter::remove(const std::string &path, bool folder, int *error) const
     return ok;
 }
 
+bool Deleter::move(const std::string &from, const std::string &to, int *error) const
+{
+    if (fs_->move(from, to, error))
+        return true;
+    if (!permission(*error) || !options_.privileged)
+        return false;
+    bool ok = false;
+    options_.privileged(
+        [&]
+        {
+            ok = fs_->move(from, to, error);
+            return ok;
+        });
+    return ok;
+}
+
 bool Deleter::checked_ancestors(const std::string &path, const std::string &volume_root,
                                 ItemResult &result)
 {
@@ -452,9 +468,46 @@ void Deleter::delete_title(const DeleteJob &job, ItemResult &result)
         result.reason = "Uninstalling is not available.";
         return;
     }
+    // A Playden title's folder leaves /data/homebrew first, as Playden does:
+    // what ShadowMount can no longer find, it cannot register again.
+    std::vector<std::string> folders = item.then_delete;
+    std::string retired_from;
+    std::string retired_to;
+    for (std::string &path : folders)
+    {
+        if (options_.trash_dir.empty() || options_.rules.homebrew.empty() ||
+            parent_of(path) != options_.rules.homebrew)
+            continue;
+        Entry folder;
+        int error = 0;
+        if (!checked_ancestors(path, root_of(options_.rules, path), result) ||
+            !stat(path, &folder, &error) || folder.type != EntryType::directory)
+        {
+            if (error != 0)
+                fail(result, path, error);
+            result.outcome = Outcome::failed;
+            result.reason = "The title's folder could not be checked; nothing was changed.";
+            return;
+        }
+        const std::string to =
+            child_path(options_.trash_dir, item.title_id + "-" + std::to_string(folder.inode));
+        if (!move(path, to, &error))
+        {
+            fail(result, path, error);
+            result.outcome = Outcome::failed;
+            result.reason = "The title's folder could not be moved aside; nothing was changed.";
+            return;
+        }
+        retired_from = path;
+        retired_to = to;
+        path = to;
+    }
     const UninstallResult u = options_.remover->uninstall(item.title_id);
     if (!u.ok)
     {
+        int error = 0;
+        if (!retired_to.empty() && !move(retired_to, retired_from, &error))
+            fail(result, retired_to, error);
         result.outcome = Outcome::failed;
         result.reason = u.reason;
         if (options_.log)
@@ -464,9 +517,10 @@ void Deleter::delete_title(const DeleteJob &job, ItemResult &result)
     // The system removed what it owns; then the folders that go with the
     // title (a Playden title's folder, its game data), file by file.
     bool all_gone = true;
-    for (const std::string &path : item.then_delete)
+    for (const std::string &path : folders)
     {
-        const std::string root = root_of(options_.rules, path);
+        const std::string root =
+            path == retired_to ? options_.trash_dir : root_of(options_.rules, path);
         all_gone =
             checked_ancestors(path, root, result) && remove_tree(path, root, result) && all_gone;
     }

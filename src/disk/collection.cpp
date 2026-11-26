@@ -67,9 +67,11 @@ bool contains(std::string_view path, std::string_view root)
     return path_within(root, path) && root != path;
 }
 
+// PS5 games only: uninstalling a PS4 game (CUSA) has not been tried on a
+// console, so those are left to the home screen for now.
 bool retail_title(std::string_view name)
 {
-    return is_title_id(name) && (name.starts_with("PPSA") || name.starts_with("CUSA"));
+    return is_title_id(name) && name.starts_with("PPSA");
 }
 
 // FAKE78 and three digits: one of Playden's game titles.
