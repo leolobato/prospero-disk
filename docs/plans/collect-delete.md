@@ -331,3 +331,36 @@ euid 0 (run 2); the uninstall from Prospero Disk's payload, and what retail
 uninstall leaves behind (runs 3, 4); uninstall of a game on extended storage;
 deletion speed of a large folder on the internal SSD; whether statfs shows the
 freed space at once (PFS may free lazily); the R2/R3 feel with a controller.
+
+## 9. As built (2026-11-27)
+
+What changed from the plan while implementing:
+
+- **Order.** Run 1 happened; the UI was built before runs 2 and 3, since only
+  the title rows depend on them. Run 2 (a deletion from the app with its other
+  threads alive, the euid raised per call) and run 3 (an uninstall through the
+  payload) are still to do, each with the owner's go-ahead.
+- **Title presence** is checked as Playden does, by `lstat` of
+  `/user/app/<ID>` (and the M.2 app folders, raised when refused), and has three
+  values: a check that fails is "unknown", never "gone". The payload is sent
+  only for a listed title, and a Playden game's data is deleted only once its
+  title is gone.
+- **Playden's order**: the title's folder is moved to
+  `/data/prospero-disk/trash` before the uninstall (and back if it is
+  refused), then deleted. Playden also removes ShadowMount's "manual source"
+  for the title first; Prospero Disk does not, which the owner should confirm
+  is harmless once the folder has moved.
+- **PS4 games (CUSA)** are refused for now ("Uninstall this from the home
+  screen") until a console run covers one. `/user/app/PPSA93475` (our own
+  registration) is protected.
+- **Mount points**: the console reports `st_dev` 0 for several file systems, so
+  the deleter also compares mount names (`_fstatfs` `f_mntonname`). The storage
+  probe now logs which first-level folders are mounts of their own.
+- **Tours** set `app::Context::scripted`; on real volumes a scripted run never
+  starts the deleter ("A tour drove the controller, so Prospero Disk deleted
+  nothing").
+- **Unreadable folders** (as the scanner's user, e.g. root's 0700
+  `/user/download`) can't be collected: their size is unknown. The scanner runs
+  as the app's user, so such folders show as "could not be read" already.
+- The title remover ELF is built from source by `make`; two builds differ, so
+  its hash is not pinned like `lapy.elf`.
