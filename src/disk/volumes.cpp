@@ -220,6 +220,7 @@ Environment make_environment()
         };
         remover.sleep = [](int ms) { std::this_thread::sleep_for(std::chrono::milliseconds(ms)); };
         env.remover = std::make_shared<PayloadTitleRemover>(std::move(remover));
+        env.trash_dir = "/data/prospero-disk/trash"; // made by main()
     }
 #else
     const char *volumes = std::getenv("PD_VOLUMES");

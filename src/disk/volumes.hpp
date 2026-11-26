@@ -81,6 +81,7 @@ struct Environment
     // Uninstalls collected games: the payload on a PS5, a stand-in on the
     // fixture, none for folders on a PC.
     std::shared_ptr<TitleRemover> remover;
+    std::string trash_dir; // DeleteOptions::trash_dir
     std::string cache_dir; // empty: no cache
     Elevation elevation;
     bool fixture = false;

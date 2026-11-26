@@ -357,6 +357,8 @@ int main()
             paths.data = data;
             paths.probe = data;
             (void)ensure_granted_directory(data + "/cache", original_uid);
+            // Where a Playden title's folder waits while its title is uninstalled.
+            (void)ensure_granted_directory(data + "/trash", original_uid);
             if (ensure_granted_directory(data + "/dev", original_uid))
                 paths.dev = data + "/dev";
         }
