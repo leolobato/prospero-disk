@@ -439,3 +439,27 @@ ShadowMount game's title goes with its source folder; PS4 games are allowed.
   keeps the file and says so in `install.log`); deleting Xeno Crisis's files now
   that its title is gone (no title maps to them: they are plain files, and
   Playden is not told).
+
+### Second review and run 5 (2026-11-27)
+
+One Codex review of `c2e46e1` found that a `mount.lnk` could name a folder
+that is not the title's, that two titles on one folder (or one title on two)
+were resolved silently, that the source was not checked again at delete time,
+that a linked trash or request folder could redirect a write, that a copy of a
+Playden game on another drive would make Playden forget the active one, and
+that sizes went to the title's drive. Fixed in `3660ccd`: a source must sit
+directly in a scanned `homebrew` folder and hold this title's `param.json`;
+records that don't add up refuse both sides; the source is read again before
+anything moves; every trash folder and the request file are checked as real
+(the request file with one link); a Playden game on two drives is left to
+Playden; a title's other folders count on their own drive, and an unknown size
+is said. ShadowMountPlus (`FAKE10101`) is protected.
+
+The owner chose option 1 for games whose title is already gone: a whole
+folder in `playden-games` asks Playden to forget the game even when no title
+maps to it.
+
+Run 5: startup with the stricter reading kept Flight of the Amazon Queen
+collectable as a title (571 MB with its title folder); Xeno Crisis's files
+(`464260`, no title) were deleted as files and Playden forgot the game
+(`install-request uninstall game=464260`, gone from its registry).
