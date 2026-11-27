@@ -67,6 +67,9 @@ struct DeleteOptions
     // Asks Playden to forget a game whose files were deleted ("2610"); false
     // when the request could not be written. Empty: not asked.
     std::function<bool(const std::string &)> forget_playden_game;
+    // Reads every title's ShadowMount source again (title -> folder, "" for
+    // one that doesn't add up). Empty: the rules' copy from startup is used.
+    std::function<std::map<std::string, std::string>()> read_shadowmount_sources;
     std::function<void(const std::string &)> log; // one line per failure
 };
 
@@ -140,9 +143,13 @@ class Deleter
     void run();
     void delete_item(const DeleteJob &job, ItemResult &result);
     void delete_title(const DeleteJob &job, const Check &check, ItemResult &result);
+    // Asks Playden to forget the game whose files were deleted, if any.
+    void forget_playden_game(const Check &check, ItemResult &result) const;
     // Where a title's folder waits while its title is uninstalled: the trash
     // on the folder's own drive (a rename cannot cross drives), made if needed.
-    std::string trash_for(const std::string &path, int *error) const;
+    std::string trash_for(const std::string &path, int *error, ItemResult &result);
+    // The title's source folder is still the one ShadowMount names now.
+    bool source_unchanged(const CollectedItem &item, ItemResult &result);
     // Removes path and everything under it; true when it is gone.
     // What the collection said the item was: a folder is never emptied when
     // a file was collected, and the reverse.

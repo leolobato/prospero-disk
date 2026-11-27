@@ -85,6 +85,8 @@ struct Environment
     std::string trash_dir; // DeleteOptions::trash_dir
     // DeleteOptions::forget_playden_game: a line in Playden's request file.
     std::function<bool(const std::string &)> forget_playden_game;
+    // DeleteOptions::read_shadowmount_sources.
+    std::function<std::map<std::string, std::string>()> read_shadowmount_sources;
     std::string cache_dir; // empty: no cache
     Elevation elevation;
     bool fixture = false;
@@ -99,11 +101,20 @@ Environment make_environment();
 ProtectionRules
 console_protection(const std::vector<VolumeSpec> &specs,
                    std::map<std::string, std::string> playden_titles,
-                   const std::map<std::string, std::string> &shadowmount_sources = {});
+                   const std::map<std::string, std::string> &shadowmount_sources = {},
+                   std::vector<std::string> playden_copies = {});
+
+// Playden install ids with a game folder in more than one of the given
+// playden-games folders (a copy left on another drive).
+std::vector<std::string> read_playden_copies(const FileSystem &fs, const Privileged &privileged,
+                                             const std::vector<std::string> &folders);
 
 // ShadowMountPlus titles in the given /user/app folders: each title's
-// mount.lnk names the folder it is installed from (kept only when that is a
-// plain path to a folder directly inside a "homebrew" folder).
+// mount.lnk names the folder it is installed from. A title with no mount.lnk
+// (a package install) is left out; one whose link can't be read, isn't a
+// plain path into a "homebrew" folder, names a folder whose param.json is
+// not this title's, or differs between two app folders maps to "", which the
+// rules refuse.
 std::map<std::string, std::string>
 read_shadowmount_sources(const FileSystem &fs, const Privileged &privileged,
                          const std::vector<std::string> &parents);

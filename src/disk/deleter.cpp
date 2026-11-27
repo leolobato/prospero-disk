@@ -236,7 +236,7 @@ bool Deleter::make_folder(const std::string &path, int *error) const
     return ok;
 }
 
-std::string Deleter::trash_for(const std::string &path, int *error) const
+std::string Deleter::trash_for(const std::string &path, int *error, ItemResult &result)
 {
     const std::string root = root_of(options_.rules, path);
     if (root.empty())
@@ -257,8 +257,40 @@ std::string Deleter::trash_for(const std::string &path, int *error) const
             continue;
         if (!make_folder(trash, error) && *error != EEXIST)
             return {};
+        // Made or there already: a real folder before anything goes in it.
+        if (!stat(trash, &folder, &ignored) || folder.type != EntryType::directory)
+        {
+            *error = ENOTDIR;
+            return {};
+        }
+    }
+    // Made or found, each one must be a real folder on the drive's own mount:
+    // a link in its place would send the game somewhere else.
+    if (!checked_ancestors(child_path(trash, "x"), root, result))
+    {
+        *error = result.error != 0 ? result.error : EXDEV;
+        return {};
     }
     return trash;
+}
+
+bool Deleter::source_unchanged(const CollectedItem &item, ItemResult &result)
+{
+    const auto known = options_.rules.shadowmount_sources.find(item.title_id);
+    if (known == options_.rules.shadowmount_sources.end() ||
+        std::find(item.then_delete.begin(), item.then_delete.end(), known->second) ==
+            item.then_delete.end() ||
+        !options_.read_shadowmount_sources)
+        return true;
+    const std::map<std::string, std::string> now = options_.read_shadowmount_sources();
+    const auto live = now.find(item.title_id);
+    if (live != now.end() && !live->second.empty() &&
+        canonical_path(options_.rules, live->second) == known->second)
+        return true;
+    result.reason = "ShadowMountPlus no longer installs this game from the folder that was "
+                    "collected; nothing was changed. Rescan and collect it again.";
+    fail(result, known->second, ESTALE);
+    return false;
 }
 
 bool Deleter::move(const std::string &from, const std::string &to, int *error) const
@@ -540,6 +572,8 @@ void Deleter::delete_item(const DeleteJob &job, ItemResult &result)
     result.outcome = gone                 ? Outcome::removed
                      : result.removed > 0 ? Outcome::partly
                                           : Outcome::failed;
+    if (gone && !options_.dry_run)
+        forget_playden_game(check, result);
     if (result.outcome != Outcome::partly || options_.dry_run || abort_)
         return;
     // What is left, so the picture shows it: a scan of the folder alone.
@@ -587,6 +621,11 @@ void Deleter::delete_title(const DeleteJob &job, const Check &check, ItemResult 
             return;
         }
     }
+    if (!source_unchanged(item, result))
+    {
+        result.outcome = Outcome::failed;
+        return;
+    }
     // A title's folder leaves where ShadowMount looks first, as Playden does:
     // what ShadowMount can no longer find, it cannot register again.
     std::vector<std::string> folders = item.then_delete;
@@ -606,7 +645,7 @@ void Deleter::delete_title(const DeleteJob &job, const Check &check, ItemResult 
         Entry folder;
         Entry trash;
         int error = 0;
-        const std::string trash_dir = trash_for(path, &error);
+        const std::string trash_dir = trash_for(path, &error, result);
         if (trash_dir.empty() || !stat(path, &folder, &error) ||
             folder.type != EntryType::directory || !stat(trash_dir, &trash, &error) ||
             trash.type != EntryType::directory)
@@ -651,6 +690,7 @@ void Deleter::delete_title(const DeleteJob &job, const Check &check, ItemResult 
     // The system removed what it owns; then the folders that go with the
     // title (a Playden title's folder, its game data), file by file.
     bool all_gone = true;
+    bool files_gone = false; // the collected folder itself (a Playden game's files)
     for (const std::string &path : folders)
     {
         const bool retired = path == retired_to;
@@ -664,23 +704,33 @@ void Deleter::delete_title(const DeleteJob &job, const Check &check, ItemResult 
             all_gone = false;
             continue;
         }
-        all_gone = checked_ancestors(path, root, result) &&
-                   remove_tree(path, root, Expect::folder, result) && all_gone;
+        const bool gone = checked_ancestors(path, root, result) &&
+                          remove_tree(path, root, Expect::folder, result);
+        files_gone = files_gone || (gone && path == item.key);
+        all_gone = gone && all_gone;
     }
     done_ += item.size > result.bytes ? item.size - result.bytes : 0;
     result.bytes = std::max(result.bytes, item.size);
     result.outcome = all_gone ? Outcome::removed : Outcome::partly;
     if (!all_gone)
         result.reason = "The title was uninstalled, but some of its files are left.";
+    // Playden plays from the game's files: once they are gone it must forget
+    // the install, even if the title's own folder could not all be deleted.
+    if (files_gone)
+        forget_playden_game(check, result);
+}
+
+void Deleter::forget_playden_game(const Check &check, ItemResult &result) const
+{
     // Playden keeps its own list of installed games: without this, it shows
     // the game as on a disconnected drive.
-    if (all_gone && !check.playden_game.empty() && options_.forget_playden_game &&
-        !options_.forget_playden_game(check.playden_game))
-    {
-        result.reason = "Playden could not be told; uninstall the game in Playden too.";
-        if (options_.log)
-            options_.log("playden request " + check.playden_game + ": not written");
-    }
+    if (check.playden_game.empty() || !options_.forget_playden_game ||
+        options_.forget_playden_game(check.playden_game))
+        return;
+    result.reason += std::string(result.reason.empty() ? "" : " ") +
+                     "Playden could not be told; uninstall the game in Playden too.";
+    if (options_.log)
+        options_.log("playden request " + check.playden_game + ": not written");
 }
 
 } // namespace hui::disk

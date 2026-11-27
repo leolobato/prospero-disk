@@ -53,6 +53,13 @@ struct ProtectionRules
     // mount.lnk), canonical. ShadowMount registers a title again while its
     // folder is there, so the title and the folder go together.
     std::map<std::string, std::string> shadowmount_sources; // PPSA34547 -> /mnt/ext1/homebrew/...
+    // Titles and source folders whose ShadowMount record does not add up (a
+    // link that can't be read, two titles on one folder, a folder outside
+    // where ShadowMount looks): refused from both sides, never guessed.
+    std::vector<std::string> shadowmount_refused;
+    // Playden install ids whose files are on more than one drive: which copy
+    // Playden plays is not known here, so neither uninstalls the game.
+    std::vector<std::string> playden_copies;
 };
 
 enum class Verdict : std::uint8_t
@@ -91,6 +98,14 @@ bool path_within(std::string_view path, std::string_view folder);
 // What collecting a path (any spelling) would do.
 Check check_path(const ProtectionRules &rules, std::string_view path);
 
+struct DriveTotal
+{
+    std::string drive;
+    std::string name;
+    std::uint64_t size = 0;
+    std::size_t count = 0;
+};
+
 enum class ItemKind : std::uint8_t
 {
     folder,
@@ -108,14 +123,11 @@ struct CollectedItem
     ItemKind kind = ItemKind::folder;
     std::string title_id;                 // ItemKind::title
     std::vector<std::string> then_delete; // ItemKind::title: see Check
-};
-
-struct DriveTotal
-{
-    std::string drive;
-    std::string name;
-    std::uint64_t size = 0;
-    std::size_t count = 0;
+    // A title's other folders, by the drive they are on (count 0): a
+    // ShadowMount source on the M.2 frees space there, not where the title is.
+    std::vector<DriveTotal> also;
+    // One of those folders is in no loaded scan: its size is not counted.
+    bool size_unknown = false;
 };
 
 // The items the user collected this session (never saved: a list of paths to
@@ -143,6 +155,8 @@ class Collection
     {
         return items_.size();
     }
+    // Whether any item has a folder whose size no scan knows.
+    bool size_unknown() const;
     // The collected item that is key or holds it; null when none does.
     const CollectedItem *covering(std::string_view key) const;
     const CollectedItem *find(std::string_view key) const;

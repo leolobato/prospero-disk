@@ -81,6 +81,9 @@ bool playden_title(std::string_view name)
     return std::all_of(name.begin() + 6, name.end(), [](char c) { return c >= '0' && c <= '9'; });
 }
 
+constexpr const char *kUnclearSource =
+    "ShadowMountPlus's record of this game doesn't add up: uninstall it there.";
+
 Check refuse(Verdict verdict, std::string reason)
 {
     Check c;
@@ -180,6 +183,9 @@ Check check_path(const ProtectionRules &rules, std::string_view raw)
         const bool playden = playden_title(name);
         if (!retail_title(name) && !playden)
             return refuse(Verdict::title_part, "Uninstall this from the home screen.");
+        if (std::find(rules.shadowmount_refused.begin(), rules.shadowmount_refused.end(), name) !=
+            rules.shadowmount_refused.end())
+            return refuse(Verdict::title_part, kUnclearSource);
         const auto source = rules.shadowmount_sources.find(std::string(name));
         if (source != rules.shadowmount_sources.end())
         {
@@ -205,6 +211,9 @@ Check check_path(const ProtectionRules &rules, std::string_view raw)
     }
 
     // A folder ShadowMount installs a title from: the title goes with it.
+    for (const std::string &refused : rules.shadowmount_refused)
+        if (refused.front() == '/' && (path_within(path, refused) || path_within(refused, path)))
+            return refuse(Verdict::title_part, kUnclearSource);
     for (const auto &[id, source] : rules.shadowmount_sources)
     {
         if (path == source)
@@ -242,9 +251,23 @@ Check check_path(const ProtectionRules &rules, std::string_view raw)
             continue;
         // The game folder is the first name below the games folder.
         const std::string_view game = child_below(path, games);
-        const auto it = rules.playden_titles.find(playden_install_id(games, game));
+        const std::string install_id = playden_install_id(games, game);
+        if (games.ends_with("/playden-games") &&
+            std::find(rules.playden_copies.begin(), rules.playden_copies.end(), install_id) !=
+                rules.playden_copies.end())
+            return refuse(Verdict::title_part,
+                          "This game's files are on more than one drive: uninstall it in Playden.");
+        const auto it = rules.playden_titles.find(install_id);
         if (it == rules.playden_titles.end())
-            continue; // no title of its own: plain files
+        {
+            // No title (removed first, or never set up): plain files, but
+            // Playden still lists the game, so the whole game folder asks it
+            // to forget the install too.
+            Check c;
+            if (parent == games && !install_id.empty() && games.ends_with("/playden-games"))
+                c.playden_game = playden_request_game(install_id);
+            return c;
+        }
         if (!playden_title(it->second))
             return refuse(Verdict::title_part, "Uninstall this game from Playden.");
         if (parent != games)
@@ -299,24 +322,41 @@ std::uint64_t Collection::total() const
 {
     std::uint64_t sum = 0;
     for (const CollectedItem &i : items_)
+    {
         sum += i.size;
+        for (const DriveTotal &other : i.also)
+            sum += other.size;
+    }
     return sum;
+}
+
+bool Collection::size_unknown() const
+{
+    return std::any_of(items_.begin(), items_.end(),
+                       [](const CollectedItem &i) { return i.size_unknown; });
 }
 
 std::vector<DriveTotal> Collection::drives() const
 {
     std::vector<DriveTotal> out;
-    for (const CollectedItem &i : items_)
+    const auto add = [&](const std::string &drive, const std::string &name, std::uint64_t size,
+                         std::size_t count)
     {
         auto it = std::find_if(out.begin(), out.end(),
-                               [&](const DriveTotal &d) { return d.drive == i.drive; });
+                               [&](const DriveTotal &d) { return d.drive == drive; });
         if (it == out.end())
         {
-            out.push_back({i.drive, i.drive_name, 0, 0});
+            out.push_back({drive, name, 0, 0});
             it = out.end() - 1;
         }
-        it->size += i.size;
-        ++it->count;
+        it->size += size;
+        it->count += count;
+    };
+    for (const CollectedItem &i : items_)
+    {
+        add(i.drive, i.drive_name, i.size, 1);
+        for (const DriveTotal &other : i.also)
+            add(other.drive, other.name, other.size, 0);
     }
     std::stable_sort(out.begin(), out.end(),
                      [](const DriveTotal &a, const DriveTotal &b) { return a.size > b.size; });

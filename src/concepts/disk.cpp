@@ -1192,12 +1192,13 @@ class Disk final : public app::Concept
             item.path = path;
             item.drive = dk::drive_of(v.volume.spec);
             item.drive_name = drive_name(item.drive);
-            item.size = row->disk + extra_size(key, check.then_delete);
+            item.size = row->disk;
+            item.then_delete = check.then_delete;
+            other_folders(item);
             item.kind = check.verdict == dk::Verdict::title ? dk::ItemKind::title
                         : row->node_kind == dk::Kind::file  ? dk::ItemKind::file
                                                             : dk::ItemKind::folder;
             item.title_id = check.title_id;
-            item.then_delete = check.then_delete;
             collection_.add(std::move(item));
             feedback.play(audio::Cue::favorite_on);
         }
@@ -1205,14 +1206,17 @@ class Disk final : public app::Concept
     }
 
     // What a title's other folders use (its ShadowMount source, a Playden
-    // game's title folder), as far as a scanned tree knows them: they go
-    // with it, so the totals and the confirmation count them.
-    std::uint64_t extra_size(const std::string &key, const std::vector<std::string> &folders) const
+    // game's title folder), by the drive each is on, as far as a scanned
+    // tree knows them: they go with it, so the totals and the confirmation
+    // count them where the space comes back.
+    void other_folders(dk::CollectedItem &item) const
     {
-        std::uint64_t sum = 0;
-        for (const std::string &folder : folders)
+        item.also.clear();
+        item.size_unknown = false;
+        for (const std::string &folder : item.then_delete)
         {
-            if (folder == key || dk::path_within(key, folder) || dk::path_within(folder, key))
+            if (folder == item.key || dk::path_within(item.key, folder) ||
+                dk::path_within(folder, item.key))
                 continue;
             bool found = false;
             for (const std::string &spelling : dk::path_spellings(env_.protection, folder))
@@ -1223,11 +1227,12 @@ class Disk final : public app::Concept
                     const std::uint32_t node = v.tree->find(spelling);
                     if (node == dk::kNoNode)
                         continue;
-                    sum += v.tree->node(node).disk;
+                    const std::string drive = dk::drive_of(v.volume.spec);
+                    item.also.push_back({drive, drive_name(drive), v.tree->node(node).disk, 0});
                     found = true;
                 }
+            item.size_unknown = item.size_unknown || !found;
         }
-        return sum;
     }
 
     // Items a new scan no longer has leave the collection; the rest take the
@@ -1245,8 +1250,8 @@ class Disk final : public app::Concept
                         const std::uint32_t node = v.tree->find(spelling);
                         if (node == dk::kNoNode)
                             return false;
-                        item.size =
-                            v.tree->node(node).disk + extra_size(item.key, item.then_delete);
+                        item.size = v.tree->node(node).disk;
+                        other_folders(item);
                         return true;
                     }
                 return true; // no tree shows it: keep it as it was
@@ -1260,9 +1265,14 @@ class Disk final : public app::Concept
     {
         const std::string root = canonical(v.volume.spec.path);
         std::uint64_t sum = 0;
+        const std::string drive = dk::drive_of(v.volume.spec);
         for (const dk::CollectedItem *item : collection_.sorted())
+        {
             if (dk::path_within(item->key, root))
                 sum += item->size;
+            for (const dk::DriveTotal &other : item->also)
+                sum += other.drive == drive ? other.size : 0;
+        }
         return sum;
     }
 
@@ -1448,6 +1458,9 @@ class Disk final : public app::Concept
         if (titles != 0)
             body += std::to_string(titles) + (titles == 1 ? " game is" : " games are") +
                     " uninstalled through the console.\n";
+        if (collection_.size_unknown())
+            body += "A folder that goes with a game is on a drive not scanned yet: its size "
+                    "is not in the total.\n";
         body += "Be sure about what you are deleting: deleting files can have unintended "
                 "consequences.\n" +
                 largest;
@@ -1619,6 +1632,7 @@ class Disk final : public app::Concept
         options.privileged = env_.privileged;
         options.trash_dir = env_.trash_dir;
         options.forget_playden_game = env_.forget_playden_game;
+        options.read_shadowmount_sources = env_.read_shadowmount_sources;
         options.log = [](const std::string &line)
         { std::fprintf(stderr, "[PD] %s\n", line.c_str()); };
         // The fixture paces itself by the screen's clock, as for a scan.
@@ -1823,6 +1837,9 @@ class Disk final : public app::Concept
             if (r.outcome == dk::Outcome::failed || r.outcome == dk::Outcome::partly)
                 failed.push_back(&r);
             skipped += r.outcome == dk::Outcome::skipped ? 1u : 0u;
+            // Deleted, with something still to do elsewhere (tell Playden).
+            if (r.outcome == dk::Outcome::removed && !r.reason.empty())
+                body += item_name(r.item) + kDot + r.reason + "\n";
         }
         if (!failed.empty())
         {

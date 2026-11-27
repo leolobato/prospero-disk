@@ -7,6 +7,7 @@
 #include <cerrno>
 #include <cstdio>
 #include <dirent.h>
+#include <fcntl.h>
 #include <sys/stat.h>
 #if defined(__PROSPERO__)
 #include <cstring>
@@ -181,13 +182,22 @@ class PosixFileSystem final : public FileSystem
             *error = EROFS;
             return false;
         }
-        if (mkdir(path.c_str(), 0777) == 0)
+        if (mkdir(path.c_str(), 0777) != 0)
         {
-            chmod(path.c_str(), 0777); // past the umask
-            return true;
+            *error = errno;
+            return false;
         }
-        *error = errno;
-        return false;
+        // Past the umask, through the folder that was made: by name, a link
+        // put in its place would take the mode instead.
+        const int fd = open(path.c_str(), O_RDONLY | O_NOFOLLOW);
+        struct stat st
+        {
+        };
+        if (fd >= 0 && fstat(fd, &st) == 0 && S_ISDIR(st.st_mode))
+            fchmod(fd, 0777);
+        if (fd >= 0)
+            close(fd);
+        return true;
     }
 
     bool mount_point(const std::string &path, std::string *out) const override
