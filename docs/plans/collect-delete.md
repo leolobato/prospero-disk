@@ -401,3 +401,41 @@ left main), so a game's files counted as plain files; fixed and tested.
   uninstalled while the source is there.
 - The payload loader on 9021 answered from inside the app (not from the LAN).
   No `delete:` errors; the payload's `result` file stays in its folder.
+
+### After run 3: what changed
+
+The owner chose: a Playden game's files also clean Playden's records; a
+ShadowMount game's title goes with its source folder; PS4 games are allowed.
+
+- **Playden's records**: when a game's files (`<drive>/playden-games/<game>`)
+  are deleted, Prospero Disk adds `uninstall <game>` to Playden's request file
+  (`/data/homebrew/FAKE77031/dev/install-request.txt`); Playden reads it on its
+  next start and forgets the install, with nothing left to delete. Its bottle
+  in `playden/games` stays: Playden keeps bottles for their saves and brings
+  them back on a new install. Collecting the bottle itself does not ask.
+- **ShadowMount games**: each title's `mount.lnk` names its source folder (a
+  folder inside a `homebrew` folder). Collecting the title or the source
+  uninstalls the title and deletes the source; the source first moves to
+  `<drive>/prospero-disk/trash` (same drive, outside ShadowMount's scan), as a
+  Playden title's folder does. Package installs have no `mount.lnk` and are
+  left to the system as before. `/user/app/FAKE78xxx` now means the Playden
+  title (its `/data/homebrew` folder).
+- **PS4 games** (CUSA) are accepted by the rules and the payload.
+- A title's size in the collection now includes its other folders when a
+  loaded scan knows them.
+
+### Run 4 (2026-11-27, 13.60)
+
+- **CONTROL Resonant** by its source (`/mnt/ext1/homebrew/CONTROL …`, 160 GB):
+  moved to `/mnt/ext1/prospero-disk/trash`, uninstalled, deleted in about 10 s;
+  ShadowMount logged "source removed" and did not register it again over the
+  following scans. Extended 2 up 160 GB, Internal up 118 MB.
+- **Shovel Knight** (CUSA01867) and **Rez Infinite** (CUSA05868) on the M.2:
+  uninstalled; their app, patch and appmeta folders gone; 593 MB and 1.01 GB.
+- **Loom** (Playden, GOG) by its files: title, title folder and files gone, the
+  request line written; Playden then showed "Not installed" with Install.
+- Strikers 1945 (run 3) was cleaned by writing the same request by hand.
+- Not seen: a Playden request while Playden's runtime is not ready (Playden
+  keeps the file and says so in `install.log`); deleting Xeno Crisis's files now
+  that its title is gone (no title maps to them: they are plain files, and
+  Playden is not told).
