@@ -362,6 +362,11 @@ TEST(Protection, PlaydenTitleOrGameData)
     EXPECT_EQ(c.then_delete, (std::vector<std::string>{"/data/homebrew/FAKE78024",
                                                        "/data/playden/games/steam-2610"}));
     EXPECT_EQ(check_path(rules, "/mnt/usb0/playden/games/2610").title_id, "FAKE78024");
+    // Playden 0.6 keeps the game files in /data/playden-games, seen as /user/data.
+    c = check_path(rules, "/user/data/playden-games/2610");
+    EXPECT_EQ(c.verdict, Verdict::title);
+    EXPECT_EQ(c.title_id, "FAKE78024");
+    EXPECT_EQ(check_path(rules, "/data/playden-games").verdict, Verdict::contains_titles);
     // Inside a game with a title: refused, collect the game.
     EXPECT_EQ(check_path(rules, "/data/playden/games/steam-2610/drive_c").verdict,
               Verdict::title_part);

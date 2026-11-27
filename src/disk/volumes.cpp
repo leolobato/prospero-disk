@@ -141,7 +141,9 @@ ProtectionRules console_protection(const std::vector<VolumeSpec> &specs,
                               "/mnt/ext1/user/patch", "/mnt/ext1/user/addcont"};
     rules.aliases = {{"/user/data", "/data"}};
     rules.homebrew = "/data/homebrew";
-    rules.playden_game_folders = {"/data/playden/games"};
+    // Playden's bottles and, since 0.6, its game files; /data is not a
+    // volume of its own, so neither comes from the loop below.
+    rules.playden_game_folders = {"/data/playden/games", "/data/playden-games"};
     for (const VolumeSpec &spec : specs)
         if (spec.path != "/data")
         {
