@@ -452,9 +452,6 @@ TEST(CollectionModel, OneFolderSeenFromTwoVolumesCountsOnce)
     EXPECT_FALSE(c.add(from_user));
     EXPECT_EQ(c.total(), 10u);
     EXPECT_EQ(c.drives().size(), 1u);
-    // The two console volumes are one drive.
-    const std::vector<VolumeSpec> specs = console_volume_specs();
-    EXPECT_EQ(drive_of(specs[0]), drive_of(specs[1]));
 }
 
 // ---- the deleter ----

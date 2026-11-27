@@ -118,6 +118,9 @@ ProtectionRules console_protection(const std::vector<VolumeSpec> &specs,
     ProtectionRules rules;
     for (const VolumeSpec &spec : specs)
         rules.volume_roots.push_back(spec.path);
+    // /data has no row of its own now, but it is still a mount (a view of
+    // /user/data): never collectable, and the root of what is under it.
+    rules.volume_roots.emplace_back("/data");
     const std::string system = "Part of the console's system: it must stay.";
     const std::string meta = "The console's game information: it must stay.";
     const std::string own = "Prospero Disk's own files can't be collected.";
