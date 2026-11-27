@@ -62,11 +62,17 @@ the app closes.
 - Some things can't be collected: a whole drive, "System & hidden", the
   console's system folders (`/system*`, `/preinst`, `/user/appmeta`, the
   `app.db` folder) and Prospero Disk's own files.
-- A PS5 game (`/user/app/PPSA...`) is **uninstalled through the console**, as
-  the home screen would, never deleted by hand; its patches and add-ons go with
-  it. A Playden game is uninstalled the same way: collecting its title removes
-  the title, collecting its game data removes the data and the title. PS4
-  games are left to the home screen for now.
+- An installed game, PS5 (`PPSA...`) or PS4 (`CUSA...`), is **uninstalled
+  through the console**, as the home screen would, never deleted by hand; its
+  patches and add-ons go with it.
+- A game installed by ShadowMountPlus from a folder (its `.../homebrew/<game>`
+  folder): collecting the game or that folder uninstalls the game **and deletes
+  the folder**. While the folder is there, ShadowMountPlus would install the
+  game again within seconds.
+- A Playden game: collecting its title removes the title (Playden then offers
+  "Finish setup"); collecting its game files (`playden-games/<game>`) removes
+  the files and the title, and asks Playden to forget the install, which it
+  does the next time it opens. Playden keeps the game's saves.
 - Uninstalling sends a small helper, `title-remover.elf`, to the ELF loader on
   port 9021, like Lapy.
 
@@ -85,9 +91,9 @@ own storage. Load the ELF loader and open the app again for full access.
 ## Known limits
 
 Not yet checked on a console: scanning USB drives, the console fonts for
-non-Latin scripts, whether the "System & hidden" total adds up exactly,
-deleting from the app's own process with other threads running, and
-uninstalling a game from it.
+non-Latin scripts, whether the "System & hidden" total adds up exactly, and
+deleting from a USB drive. `/user/download` can't be read, so nothing in it can
+be collected.
 Please open an issue if you try any of these.
 
 ## Building

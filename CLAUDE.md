@@ -17,11 +17,13 @@ It explains how to read the app's log, what the Lapy grant does to `/app0` and
 `/download0`, which libc calls end the process, how to write under `/data`, and
 how to deploy. Each rule says whether this app saw it or Playden did.
 
-## Where things stand (2026-11-18)
+## Where things stand (2026-11-27)
 
 Runs on the console (13.60): elevation, the probe, volume sizes, the volume
 list (mounted drives only), scans of Internal, M.2 and `/data`, the cache,
-Explore, title names and icons, 60 fps at 4K. Not yet checked on the console:
+Explore, title names and icons, 60 fps at 4K, and collect and delete: plain
+folders, PS5/PS4 uninstalls, ShadowMountPlus games with their source, Playden
+games (runs 1-4 in `docs/plans/collect-delete.md`). Not yet checked on the console:
 scanning a USB drive, the console fonts for other scripts, and whether the
 "System & hidden" total adds up exactly. There is no music: the tracks and
 `snd0.at9` were removed on purpose; the UI sound effects stay.

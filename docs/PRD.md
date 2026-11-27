@@ -138,8 +138,14 @@ The plan and the owner's decisions: [docs/plans/collect-delete.md](plans/collect
   after the current item. The result shows the space freed per drive (statfs)
   and the items that failed, which stay collected. The trees are updated in
   place and the caches saved.
-- Installed PS5 games and Playden's games are uninstalled through the system
-  (a payload sent to the ELF loader), never deleted by hand.
+- Installed PS5 and PS4 games and Playden's games are uninstalled through the
+  system (a payload sent to the ELF loader), never deleted by hand.
+- A game ShadowMountPlus installs from a folder (`mount.lnk`) goes with that
+  folder: the folder moves to `<drive>/prospero-disk/trash`, the title is
+  uninstalled, then the folder is deleted. Otherwise ShadowMountPlus registers
+  it again on its next scan.
+- Deleting a Playden game's files adds `uninstall <game>` to Playden's request
+  file, so Playden forgets the install when it next opens.
 
 ## 6. Functional requirements
 
@@ -159,7 +165,7 @@ The plan and the owner's decisions: [docs/plans/collect-delete.md](plans/collect
 | F12 | Exit through `sceSystemServiceLoadExec("exit", NULL)`, never `exit()`. |
 | F13 | Never collectable: volume roots, "System & hidden", roll-ups, `/system*`, `/preinst`, `/user/appmeta`, the `app.db` folder, Prospero Disk's own folders, and folders that contain any of them or installed games. |
 | F14 | Deletion is bottom-up, never follows a link or crosses a mount point, `lstat`s each entry again before removing it, and goes on past errors, logging each with its errno. |
-| F15 | An installed game is uninstalled through the system's app-install API, never by deleting its folders. |
+| F15 | An installed game is uninstalled through the system's app-install API, never by deleting its folders. A ShadowMountPlus game's source folder goes with it, moved out of ShadowMount's reach first. |
 | F16 | The collection lasts for the session only. |
 
 ## 7. Technical design (outline)
