@@ -364,3 +364,15 @@ What changed from the plan while implementing:
   as the app's user, so such folders show as "could not be read" already.
 - The title remover ELF is built from source by `make`; two builds differ, so
   its hash is not pinned like `lapy.elf`.
+
+### Run 2 (2026-11-27, 13.60): a deletion from the app
+
+A throwaway folder made over FTP (`/data/pd-run2`: 4 files, 3 folders,
+7.67 MB, 0777 folders under root's `/data`) was collected in Explore as
+`/user/data/pd-run2`, reviewed, confirmed, and deleted with the 2-second hold.
+Letting go after one second cancelled ("Nothing was deleted."). The deletion
+took under a second, the result read "7.67 MB freed", the folder was gone over
+FTP, the log had no `delete:` errors, frames stayed at 16.7 ms, and the quit
+request closed the app. Seen on the way: after the result, the list's focus
+goes back to its first row; `/user/download` is not readable by the scanner, so
+nothing in it can be collected.
