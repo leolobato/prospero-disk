@@ -58,10 +58,15 @@ struct DeleteOptions
     Privileged privileged;
     // Walks and reports, removes nothing.
     bool dry_run = false;
-    // Where a Playden title's folder is moved before its title is uninstalled,
-    // so ShadowMount cannot find it again in /data/homebrew (Playden's order).
-    // Empty: it is deleted where it is, after the uninstall.
+    // Where a title's folder (a Playden title's, or any folder ShadowMount
+    // installs a title from) is moved before the title is uninstalled, so
+    // ShadowMount cannot register it again (Playden's order). On another
+    // drive the trash is <drive>/prospero-disk/trash. Empty: the folder is
+    // deleted where it is, after the uninstall.
     std::string trash_dir;
+    // Asks Playden to forget a game whose files were deleted ("2610"); false
+    // when the request could not be written. Empty: not asked.
+    std::function<bool(const std::string &)> forget_playden_game;
     std::function<void(const std::string &)> log; // one line per failure
 };
 
@@ -134,7 +139,10 @@ class Deleter
   private:
     void run();
     void delete_item(const DeleteJob &job, ItemResult &result);
-    void delete_title(const DeleteJob &job, ItemResult &result);
+    void delete_title(const DeleteJob &job, const Check &check, ItemResult &result);
+    // Where a title's folder waits while its title is uninstalled: the trash
+    // on the folder's own drive (a rename cannot cross drives), made if needed.
+    std::string trash_for(const std::string &path, int *error) const;
     // Removes path and everything under it; true when it is gone.
     // What the collection said the item was: a folder is never emptied when
     // a file was collected, and the reverse.
@@ -152,6 +160,7 @@ class Deleter
     bool list(const std::string &path, std::vector<Entry> *out, int *error) const;
     bool remove(const std::string &path, bool folder, int *error) const;
     bool move(const std::string &from, const std::string &to, int *error) const;
+    bool make_folder(const std::string &path, int *error) const;
     // The mount a folder is on ("" when the file system cannot say).
     std::string mount_of(const std::string &path) const;
     void fail(ItemResult &result, const std::string &path, int error);

@@ -1192,7 +1192,7 @@ class Disk final : public app::Concept
             item.path = path;
             item.drive = dk::drive_of(v.volume.spec);
             item.drive_name = drive_name(item.drive);
-            item.size = row->disk;
+            item.size = row->disk + extra_size(key, check.then_delete);
             item.kind = check.verdict == dk::Verdict::title ? dk::ItemKind::title
                         : row->node_kind == dk::Kind::file  ? dk::ItemKind::file
                                                             : dk::ItemKind::folder;
@@ -1202,6 +1202,32 @@ class Disk final : public app::Concept
             feedback.play(audio::Cue::favorite_on);
         }
         refresh_marks();
+    }
+
+    // What a title's other folders use (its ShadowMount source, a Playden
+    // game's title folder), as far as a scanned tree knows them: they go
+    // with it, so the totals and the confirmation count them.
+    std::uint64_t extra_size(const std::string &key, const std::vector<std::string> &folders) const
+    {
+        std::uint64_t sum = 0;
+        for (const std::string &folder : folders)
+        {
+            if (folder == key || dk::path_within(key, folder) || dk::path_within(folder, key))
+                continue;
+            bool found = false;
+            for (const std::string &spelling : dk::path_spellings(env_.protection, folder))
+                for (const VolumeState &v : volumes_)
+                {
+                    if (found || !v.tree || !dk::path_within(spelling, v.volume.spec.path))
+                        continue;
+                    const std::uint32_t node = v.tree->find(spelling);
+                    if (node == dk::kNoNode)
+                        continue;
+                    sum += v.tree->node(node).disk;
+                    found = true;
+                }
+        }
+        return sum;
     }
 
     // Items a new scan no longer has leave the collection; the rest take the
@@ -1219,7 +1245,8 @@ class Disk final : public app::Concept
                         const std::uint32_t node = v.tree->find(spelling);
                         if (node == dk::kNoNode)
                             return false;
-                        item.size = v.tree->node(node).disk;
+                        item.size =
+                            v.tree->node(node).disk + extra_size(item.key, item.then_delete);
                         return true;
                     }
                 return true; // no tree shows it: keep it as it was
@@ -1591,6 +1618,7 @@ class Disk final : public app::Concept
         options.remover = env_.remover.get();
         options.privileged = env_.privileged;
         options.trash_dir = env_.trash_dir;
+        options.forget_playden_game = env_.forget_playden_game;
         options.log = [](const std::string &line)
         { std::fprintf(stderr, "[PD] %s\n", line.c_str()); };
         // The fixture paces itself by the screen's clock, as for a scan.

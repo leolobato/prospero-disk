@@ -67,11 +67,10 @@ bool contains(std::string_view path, std::string_view root)
     return path_within(root, path) && root != path;
 }
 
-// PS5 games only: uninstalling a PS4 game (CUSA) has not been tried on a
-// console, so those are left to the home screen for now.
+// A PS5 or a PS4 game.
 bool retail_title(std::string_view name)
 {
-    return is_title_id(name) && name.starts_with("PPSA");
+    return is_title_id(name) && (name.starts_with("PPSA") || name.starts_with("CUSA"));
 }
 
 // FAKE78 and three digits: one of Playden's game titles.
@@ -88,6 +87,34 @@ Check refuse(Verdict verdict, std::string reason)
     c.verdict = verdict;
     c.reason = std::move(reason);
     return c;
+}
+
+Check uninstall(std::string_view id, std::vector<std::string> then_delete)
+{
+    Check c;
+    c.verdict = Verdict::title;
+    c.title_id = std::string(id);
+    c.then_delete = std::move(then_delete);
+    return c;
+}
+
+// The protected root a ShadowMount source sits in: Prospero Disk's own, or
+// Playden's. Null when none does.
+const ProtectedRoot *protecting(const ProtectionRules &rules, std::string_view path)
+{
+    for (const ProtectedRoot &root : rules.protected_roots)
+        if (matches(path, root.path) || contains(path, root.path))
+            return &root;
+    return nullptr;
+}
+
+// Playden's uninstall request names a Steam game by its app ID, others by
+// their install id.
+std::string playden_request_game(std::string_view install_id)
+{
+    if (install_id.starts_with("steam-"))
+        return std::string(install_id.substr(6));
+    return std::string(install_id);
 }
 
 } // namespace
@@ -150,12 +177,22 @@ Check check_path(const ProtectionRules &rules, std::string_view raw)
         if (parent != folder)
             return refuse(Verdict::title_part,
                           "Part of an installed game: collect the game to uninstall it.");
-        if (!retail_title(name))
+        const bool playden = playden_title(name);
+        if (!retail_title(name) && !playden)
             return refuse(Verdict::title_part, "Uninstall this from the home screen.");
-        Check c;
-        c.verdict = Verdict::title;
-        c.title_id = std::string(name);
-        return c;
+        const auto source = rules.shadowmount_sources.find(std::string(name));
+        if (source != rules.shadowmount_sources.end())
+        {
+            if (const ProtectedRoot *root = protecting(rules, source->second))
+                return refuse(Verdict::protected_path, root->reason);
+            return uninstall(name, {source->second});
+        }
+        // A Playden title is installed from its folder in /data/homebrew.
+        if (playden && !rules.homebrew.empty())
+            return uninstall(name, {rules.homebrew + "/" + std::string(name)});
+        if (playden)
+            return refuse(Verdict::title_part, "Uninstall this from the home screen.");
+        return uninstall(name, {});
     }
     for (const std::string &folder : rules.title_companions)
     {
@@ -167,6 +204,23 @@ Check check_path(const ProtectionRules &rules, std::string_view raw)
                           "It goes with its game: collect the game to uninstall both.");
     }
 
+    // A folder ShadowMount installs a title from: the title goes with it.
+    for (const auto &[id, source] : rules.shadowmount_sources)
+    {
+        if (path == source)
+        {
+            if (!retail_title(id) && !playden_title(id))
+                return refuse(Verdict::title_part, "Uninstall this from the home screen.");
+            return uninstall(id, {source});
+        }
+        if (path_within(path, source))
+            return refuse(Verdict::title_part,
+                          "Part of an installed game: collect the game to uninstall it.");
+        if (path_within(source, path))
+            return refuse(Verdict::contains_titles,
+                          "It holds installed games: collect them one at a time.");
+    }
+
     // Playden: a game's title, or its game data, uninstalls the title.
     if (!rules.homebrew.empty() && path_within(path, rules.homebrew) && path != rules.homebrew)
     {
@@ -176,11 +230,7 @@ Check check_path(const ProtectionRules &rules, std::string_view raw)
             if (parent != rules.homebrew)
                 return refuse(Verdict::title_part,
                               "Part of a Playden game's title: collect the title or the game.");
-            Check c;
-            c.verdict = Verdict::title;
-            c.title_id = std::string(id);
-            c.then_delete = {path};
-            return c;
+            return uninstall(id, {path});
         }
     }
     for (const std::string &games : rules.playden_game_folders)
@@ -206,6 +256,10 @@ Check check_path(const ProtectionRules &rules, std::string_view raw)
         if (!rules.homebrew.empty())
             c.then_delete.push_back(rules.homebrew + "/" + it->second);
         c.then_delete.push_back(path);
+        // The game's files (not its bottle, which keeps its saves): Playden
+        // is asked to forget the install, or it waits for a drive.
+        if (games.ends_with("/playden-games"))
+            c.playden_game = playden_request_game(it->first);
         return c;
     }
     return Check{};

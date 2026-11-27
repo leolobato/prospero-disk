@@ -15,6 +15,7 @@
 #include <cerrno>
 #include <cstdio>
 #include <cstdlib>
+#include <map>
 #include <string>
 #include <sys/stat.h>
 #include <unistd.h>
@@ -331,8 +332,10 @@ TEST(Protection, GamesAreUninstalledNeverDeletedByHand)
     c = check_path(rules, "/mnt/ext1/user/app/PPSA15508");
     EXPECT_EQ(c.verdict, Verdict::title);
     EXPECT_EQ(c.title_id, "PPSA15508");
-    // PS4 games: not tried on a console yet, left to the home screen.
-    EXPECT_EQ(check_path(rules, "/mnt/ext1/user/app/CUSA01047").verdict, Verdict::title_part);
+    // PS4 games too.
+    c = check_path(rules, "/mnt/ext1/user/app/CUSA01047");
+    EXPECT_EQ(c.verdict, Verdict::title);
+    EXPECT_EQ(c.title_id, "CUSA01047");
     EXPECT_EQ(check_path(rules, "/user/app/PPSA01467/sce_sys").verdict, Verdict::title_part);
     EXPECT_EQ(check_path(rules, "/user/app/FAKE10101").verdict, Verdict::title_part);
     // It holds Prospero Disk's own registration as well as games.
@@ -367,6 +370,14 @@ TEST(Protection, PlaydenTitleOrGameData)
     EXPECT_EQ(c.verdict, Verdict::title);
     EXPECT_EQ(c.title_id, "FAKE78024");
     EXPECT_EQ(check_path(rules, "/data/playden-games").verdict, Verdict::contains_titles);
+    // Its files: Playden is asked to forget the install. Its bottle keeps the
+    // saves Playden brings back on a new install: not asked.
+    EXPECT_EQ(c.playden_game, "2610");
+    EXPECT_EQ(check_path(rules, "/data/playden/games/steam-2610").playden_game, "");
+    // The title in /user/app is the title in /data/homebrew.
+    c = check_path(rules, "/user/app/FAKE78024");
+    EXPECT_EQ(c.verdict, Verdict::title);
+    EXPECT_EQ(c.then_delete, std::vector<std::string>{"/data/homebrew/FAKE78024"});
     // Inside a game with a title: refused, collect the game.
     EXPECT_EQ(check_path(rules, "/data/playden/games/steam-2610/drive_c").verdict,
               Verdict::title_part);
@@ -374,6 +385,32 @@ TEST(Protection, PlaydenTitleOrGameData)
     EXPECT_EQ(check_path(rules, "/data/playden/games/steam-1").verdict, Verdict::folder);
     EXPECT_EQ(check_path(rules, "/data/playden/games").verdict, Verdict::contains_titles);
     EXPECT_EQ(check_path(rules, "/data/playden").verdict, Verdict::contains_titles);
+}
+
+// ShadowMountPlus registers a title again while the folder it installs it
+// from is there (console run 3): the title and that folder go together.
+TEST(Protection, ShadowMountTitleAndItsSource)
+{
+    const std::string control = "/mnt/ext1/homebrew/CONTROL Resonant 1.300.300 PPSA34547 PS5";
+    const ProtectionRules rules =
+        console_protection(console_volume_specs(), {{"steam-2610", "FAKE78024"}},
+                           {{"PPSA34547", control},
+                            {"PPSA93475", "/user/data/homebrew/PPSA93475"},
+                            {"FAKE10101", "/data/homebrew/FAKE10101"}});
+    Check c = check_path(rules, "/user/app/PPSA34547");
+    EXPECT_EQ(c.verdict, Verdict::title);
+    EXPECT_EQ(c.then_delete, std::vector<std::string>{control});
+    // The folder itself is the same job.
+    c = check_path(rules, control);
+    EXPECT_EQ(c.verdict, Verdict::title);
+    EXPECT_EQ(c.title_id, "PPSA34547");
+    EXPECT_EQ(c.then_delete, std::vector<std::string>{control});
+    EXPECT_EQ(check_path(rules, control + "/sce_sys").verdict, Verdict::title_part);
+    EXPECT_EQ(check_path(rules, "/mnt/ext1/homebrew").verdict, Verdict::contains_titles);
+    // Our own install stays, by its title too; ShadowMount itself is not a game.
+    EXPECT_EQ(check_path(rules, "/user/app/PPSA93475").verdict, Verdict::protected_path);
+    EXPECT_EQ(check_path(rules, "/data/homebrew/FAKE10101").verdict, Verdict::title_part);
+    EXPECT_EQ(check_path(rules, "/user/app/FAKE10101").verdict, Verdict::title_part);
 }
 
 TEST(Protection, SpellingsOfOneFolder)
@@ -1026,6 +1063,122 @@ TEST(FixtureDeleter, PlaydenTitleFolderIsMovedAsideFirst)
     results = run(*fs, options);
     EXPECT_EQ(results[0].outcome, Outcome::failed);
     EXPECT_TRUE(fs->stat(root + "/home/10000000/savedata/FAKE78002/sdimg_save", &seen));
+}
+
+TEST(FixtureDeleter, AShadowMountSourceIsMovedAsideOnItsOwnDrive)
+{
+    const auto fs = make_fixture_filesystem();
+    const std::string root = kFixtureRoot;
+    const std::string usb = kFixtureUsbRoot;
+    int error = 0;
+    ASSERT_TRUE(fs->make_folder(usb + "/homebrew", &error));
+    ASSERT_TRUE(fs->make_folder(usb + "/homebrew/GAME", &error));
+    ProtectionRules rules = fixture_rules();
+    rules.shadowmount_sources = {{"PPSA10021", usb + "/homebrew/GAME"}};
+    FakeRemover remover;
+    Entry seen;
+    remover.on_uninstall = [&]
+    {
+        // Out of ShadowMount's way, in a trash made on the source's drive.
+        EXPECT_FALSE(fs->stat(usb + "/homebrew/GAME", &seen));
+        EXPECT_TRUE(fs->stat(usb + "/prospero-disk/trash", &seen));
+    };
+    DeleteOptions options;
+    options.rules = rules;
+    options.remover = &remover;
+    options.trash_dir = root + "/download";
+    options.jobs = {title_job(rules, root + "/app/PPSA10021", root)};
+    ASSERT_EQ(options.jobs[0].item.then_delete, std::vector<std::string>{usb + "/homebrew/GAME"});
+    const auto results = run(*fs, options);
+    ASSERT_EQ(results.size(), 1u);
+    EXPECT_EQ(results[0].outcome, Outcome::removed) << results[0].error_path;
+    EXPECT_EQ(remover.asked, std::vector<std::string>{"PPSA10021"});
+    std::vector<Entry> trash;
+    ASSERT_TRUE(fs->list(usb + "/prospero-disk/trash", &trash, &error));
+    EXPECT_TRUE(trash.empty());
+}
+
+TEST(FixtureDeleter, PlaydenIsToldWhenAGamesFilesAreDeleted)
+{
+    const auto fs = make_fixture_filesystem();
+    const std::string root = kFixtureRoot;
+    int error = 0;
+    for (const char *folder : {"/hb", "/hb/FAKE78024", "/playden-games", "/playden-games/2610"})
+        ASSERT_TRUE(fs->make_folder(root + folder, &error)) << folder;
+    ProtectionRules rules = fixture_rules();
+    rules.homebrew = root + "/hb";
+    rules.playden_game_folders = {root + "/playden-games"};
+    rules.playden_titles = {{"steam-2610", "FAKE78024"}};
+    FakeRemover remover;
+    std::vector<std::string> told;
+    bool answer = true;
+    DeleteOptions options;
+    options.rules = rules;
+    options.remover = &remover;
+    options.forget_playden_game = [&](const std::string &game)
+    {
+        told.push_back(game);
+        return answer;
+    };
+    options.jobs = {title_job(rules, root + "/playden-games/2610", root)};
+    auto results = run(*fs, options);
+    ASSERT_EQ(results.size(), 1u);
+    EXPECT_EQ(results[0].outcome, Outcome::removed) << results[0].error_path;
+    EXPECT_EQ(told, std::vector<std::string>{"2610"});
+    EXPECT_TRUE(results[0].reason.empty());
+
+    // Not written: the result says to finish in Playden.
+    for (const char *folder : {"/hb/FAKE78024", "/playden-games/2610"})
+        ASSERT_TRUE(fs->make_folder(root + folder, &error)) << folder;
+    answer = false;
+    options.jobs = {title_job(rules, root + "/playden-games/2610", root)};
+    results = run(*fs, options);
+    EXPECT_EQ(results[0].outcome, Outcome::removed);
+    EXPECT_NE(results[0].reason.find("Playden"), std::string::npos);
+}
+
+using ConsoleFiles = TempDir;
+
+TEST_F(ConsoleFiles, ShadowMountSourcesComeFromMountLinks)
+{
+    folder("app");
+    const auto link = [&](const char *title, const std::string &text)
+    {
+        folder(std::string("app/") + title);
+        std::FILE *f = std::fopen(path(std::string("app/") + title + "/mount.lnk").c_str(), "wb");
+        ASSERT_NE(f, nullptr);
+        std::fwrite(text.data(), 1, text.size(), f);
+        std::fclose(f);
+    };
+    link("PPSA34547", "/mnt/ext1/homebrew/CONTROL Resonant\n");
+    link("FAKE78079", "/data/homebrew/FAKE78079");
+    link("PPSA00002", "/mnt/ext1/games/Other");    // not where ShadowMount looks
+    link("PPSA00003", "/data/homebrew/../system"); // not a plain path
+    link("PPSA00004", "/data/homebrew/A\nB");      // two lines
+    link("NOTANID", "/data/homebrew/NOTANID");
+    folder("app/CUSA01867"); // a package install: no mount.lnk
+    const auto fs = make_posix_filesystem();
+    const auto sources = read_shadowmount_sources(*fs, Privileged{}, {path("app"), path("none")});
+    EXPECT_EQ(sources, (std::map<std::string, std::string>{
+                           {"FAKE78079", "/data/homebrew/FAKE78079"},
+                           {"PPSA34547", "/mnt/ext1/homebrew/CONTROL Resonant"}}));
+}
+
+TEST_F(ConsoleFiles, PlaydenRequestsAreAppendedLineByLine)
+{
+    folder("FAKE77031");
+    EXPECT_TRUE(append_playden_request(path("FAKE77031"), "2610", Privileged{}));
+    EXPECT_TRUE(append_playden_request(path("FAKE77031"), "gog-1207659723", Privileged{}));
+    EXPECT_FALSE(append_playden_request(path("FAKE77031"), "2610\ncancel 1", Privileged{}));
+    EXPECT_FALSE(append_playden_request(path("FAKE77031"), "steam-2610", Privileged{}));
+    std::string text;
+    if (std::FILE *f = std::fopen(path("FAKE77031/dev/install-request.txt").c_str(), "rb"))
+    {
+        char buffer[256];
+        text.assign(buffer, std::fread(buffer, 1, sizeof buffer, f));
+        std::fclose(f);
+    }
+    EXPECT_EQ(text, "uninstall 2610\nuninstall gog-1207659723\n");
 }
 
 // ---- uninstalling through the system ----

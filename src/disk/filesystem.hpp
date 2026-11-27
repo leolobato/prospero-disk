@@ -87,6 +87,14 @@ class FileSystem
         *error = EROFS;
         return false;
     }
+    // Makes one folder (mkdir, open to everyone: root has no DAC bypass on
+    // the console). Refused unless the file system allows removal, as move is.
+    virtual bool make_folder(const std::string &path, int *error) const
+    {
+        (void)path;
+        *error = EROFS;
+        return false;
+    }
     // The screen's clock moved on: a paced fixture lets more folders through.
     virtual void advance(double seconds) const
     {

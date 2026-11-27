@@ -9,6 +9,7 @@
 #include "disk/filesystem.hpp"
 
 #include <cstdint>
+#include <functional>
 #include <map>
 #include <memory>
 #include <string>
@@ -82,6 +83,8 @@ struct Environment
     // fixture, none for folders on a PC.
     std::shared_ptr<TitleRemover> remover;
     std::string trash_dir; // DeleteOptions::trash_dir
+    // DeleteOptions::forget_playden_game: a line in Playden's request file.
+    std::function<bool(const std::string &)> forget_playden_game;
     std::string cache_dir; // empty: no cache
     Elevation elevation;
     bool fixture = false;
@@ -93,8 +96,23 @@ Environment make_environment();
 
 // The console's rules: what Prospero Disk never deletes, where installed
 // titles are, the /user/data alias, and Playden's titles.
-ProtectionRules console_protection(const std::vector<VolumeSpec> &specs,
-                                   std::map<std::string, std::string> playden_titles);
+ProtectionRules
+console_protection(const std::vector<VolumeSpec> &specs,
+                   std::map<std::string, std::string> playden_titles,
+                   const std::map<std::string, std::string> &shadowmount_sources = {});
+
+// ShadowMountPlus titles in the given /user/app folders: each title's
+// mount.lnk names the folder it is installed from (kept only when that is a
+// plain path to a folder directly inside a "homebrew" folder).
+std::map<std::string, std::string>
+read_shadowmount_sources(const FileSystem &fs, const Privileged &privileged,
+                         const std::vector<std::string> &parents);
+
+// Adds "uninstall <game>" to Playden's request file (<title_root>/dev/
+// install-request.txt), which Playden reads on its next start. False for a
+// game word Playden would not take, or when the line could not be written.
+bool append_playden_request(const std::string &title_root, const std::string &game,
+                            const Privileged &privileged);
 
 // Set once by main() on the console, before the first design is created.
 void set_elevation(const Elevation &elevation);

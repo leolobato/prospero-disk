@@ -281,6 +281,43 @@ class FixtureFileSystem final : public FileSystem
         return true;
     }
 
+    bool make_folder(const std::string &path, int *error) const override
+    {
+        std::lock_guard<std::mutex> data(data_mutex_);
+        std::vector<Entry> *siblings = nullptr;
+        int ignored = 0;
+        if (find(path, &siblings, &ignored) != kMissing)
+        {
+            *error = EEXIST;
+            return false;
+        }
+        const std::size_t slash = path.find_last_of('/');
+        const std::string parent_path = slash == std::string::npos ? "" : path.substr(0, slash);
+        const auto parent = dirs_.find(parent_path);
+        if (slash == std::string::npos || parent == dirs_.end())
+        {
+            *error = ENOENT;
+            return false;
+        }
+        Entry made;
+        int parent_error = 0;
+        std::vector<Entry> *parent_siblings = nullptr;
+        const std::size_t at = find(parent_path, &parent_siblings, &parent_error);
+        // A volume root has no entry of its own: the USB volume is device 3.
+        made.device = at != kMissing                   ? (*parent_siblings)[at].device
+                      : parent_path == kFixtureUsbRoot ? 3
+                                                       : 1;
+        made.name = path.substr(slash + 1);
+        made.type = EntryType::directory;
+        made.inode = ++made_inode_;
+        made.disk = kBlock;
+        made.apparent = kBlock;
+        made.mtime = kNow;
+        parent->second.push_back(made);
+        dirs_[path];
+        return true;
+    }
+
     bool remove_folder(const std::string &path, int *error) const override
     {
         std::lock_guard<std::mutex> data(data_mutex_);
@@ -559,7 +596,8 @@ class FixtureFileSystem final : public FileSystem
     mutable std::map<std::string, std::vector<Entry>> dirs_;
     mutable std::map<std::string, std::string> contents_;
     mutable std::set<std::string> unreadable_;
-    mutable std::uint64_t usb_used_ = 1ull << 30; // the file system's own share
+    mutable std::uint64_t made_inode_ = 1ull << 40; // folders made later: inodes of their own
+    mutable std::uint64_t usb_used_ = 1ull << 30;   // the file system's own share
     mutable std::uint64_t internal_used_ = 602 * kGB;
 };
 

@@ -174,6 +174,22 @@ class PosixFileSystem final : public FileSystem
         return false;
     }
 
+    bool make_folder(const std::string &path, int *error) const override
+    {
+        if (!allow_remove_)
+        {
+            *error = EROFS;
+            return false;
+        }
+        if (mkdir(path.c_str(), 0777) == 0)
+        {
+            chmod(path.c_str(), 0777); // past the umask
+            return true;
+        }
+        *error = errno;
+        return false;
+    }
+
     bool mount_point(const std::string &path, std::string *out) const override
     {
 #if defined(__PROSPERO__)

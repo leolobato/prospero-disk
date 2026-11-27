@@ -36,8 +36,9 @@ struct ProtectionRules
     std::vector<std::string> volume_roots;
     std::vector<ProtectedRoot> protected_roots;
     // Folders whose children are installed titles (/user/app): a child named
-    // PPSA/CUSA + five digits is uninstalled through the system, any other
-    // child is refused, and the folder itself (and what contains it) too.
+    // PPSA/CUSA + five digits, or a Playden title, is uninstalled through the
+    // system, any other child is refused, and the folder itself (and what
+    // contains it) too.
     std::vector<std::string> title_parents;
     // Folders whose children belong to a title (/user/patch, /user/addcont):
     // refused, the game's uninstall removes them.
@@ -48,6 +49,10 @@ struct ProtectionRules
     std::string homebrew; // "/data/homebrew"
     std::vector<std::string> playden_game_folders;
     std::map<std::string, std::string> playden_titles; // steam-2610 -> FAKE78024
+    // ShadowMountPlus titles: the folder each one is installed from (its
+    // mount.lnk), canonical. ShadowMount registers a title again while its
+    // folder is there, so the title and the folder go together.
+    std::map<std::string, std::string> shadowmount_sources; // PPSA34547 -> /mnt/ext1/homebrew/...
 };
 
 enum class Verdict : std::uint8_t
@@ -70,6 +75,9 @@ struct Check
     // the uninstall (a Playden title's folder, its game data). Empty for a
     // retail game: the system removes its folders itself.
     std::vector<std::string> then_delete;
+    // Playden's game files: the game as Playden's uninstall request names it
+    // ("2610", "gog-1207659723"), so Playden forgets the install too.
+    std::string playden_game;
 };
 
 // The spelling every comparison uses: aliases resolved, no trailing '/'.

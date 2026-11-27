@@ -10,7 +10,10 @@
 #include <cerrno>
 #include <chrono>
 #include <cstdlib>
+#include <fcntl.h>
+#include <sys/stat.h>
 #include <thread>
+#include <unistd.h>
 #include <utility>
 
 namespace hui::disk
@@ -23,6 +26,73 @@ Elevation &elevation_state()
 {
     static Elevation state;
     return state;
+}
+
+// A path ShadowMount may install a title from: absolute, plain, and a
+// folder directly inside a "homebrew" folder (where it scans).
+bool plain_source(const std::string &path)
+{
+    if (path.size() < 2 || path.front() != '/' || path.find("//") != std::string::npos ||
+        path.find("/../") != std::string::npos || path.find("/./") != std::string::npos ||
+        path.ends_with("/..") || path.ends_with("/.") || path.ends_with("/"))
+        return false;
+    for (const char c : path)
+        if (static_cast<unsigned char>(c) < 0x20)
+            return false;
+    const std::size_t slash = path.find_last_of('/');
+    const std::string parent = path.substr(0, slash);
+    return parent.ends_with("/homebrew");
+}
+
+// Reads a whole folder, raised when the app's user may not (the M.2 app
+// folders are root's 0770).
+bool list_raised(const FileSystem &fs, const Privileged &privileged, const std::string &path,
+                 std::vector<Entry> *out)
+{
+    int error = 0;
+    if (fs.list(path, out, &error))
+        return true;
+    bool ok = false;
+    if ((error == EACCES || error == EPERM) && privileged)
+        privileged(
+            [&]
+            {
+                out->clear();
+                ok = fs.list(path, out, &error);
+                return ok;
+            });
+    return ok;
+}
+
+bool read_raised(const FileSystem &fs, const Privileged &privileged, const std::string &path,
+                 std::string *out)
+{
+    if (fs.read_file(path, out, 1024))
+        return true;
+    bool ok = false;
+    if ((errno == EACCES || errno == EPERM) && privileged)
+        privileged(
+            [&]
+            {
+                ok = fs.read_file(path, out, 1024);
+                return ok;
+            });
+    return ok;
+}
+
+// What Playden's uninstall request accepts: a Steam app ID, gog-<id> or local-<uuid>.
+bool playden_request_word(const std::string &word)
+{
+    const auto digits = [](std::string_view s)
+    { return !s.empty() && s.size() <= 20 && s.find_first_not_of("0123456789") == s.npos; };
+    if (digits(word))
+        return true;
+    if (word.starts_with("gog-"))
+        return digits(std::string_view(word).substr(4));
+    if (word.starts_with("local-"))
+        return word.size() <= 64 &&
+               word.find_first_not_of("0123456789abcdef-", 6) == std::string::npos;
+    return false;
 }
 
 Privileged &privileged_state()
@@ -112,8 +182,68 @@ std::vector<Volume> detect_volumes(const FileSystem &fs, const std::vector<Volum
     return out;
 }
 
+std::map<std::string, std::string> read_shadowmount_sources(const FileSystem &fs,
+                                                            const Privileged &privileged,
+                                                            const std::vector<std::string> &parents)
+{
+    std::map<std::string, std::string> sources;
+    for (const std::string &parent : parents)
+    {
+        std::vector<Entry> titles;
+        if (!list_raised(fs, privileged, parent, &titles))
+            continue;
+        for (const Entry &title : titles)
+        {
+            if (title.type != EntryType::directory ||
+                (!is_title_id(title.name) && !title.name.starts_with("FAKE78")))
+                continue;
+            std::string text;
+            if (!read_raised(fs, privileged, parent + "/" + title.name + "/mount.lnk", &text))
+                continue;
+            while (!text.empty() && (text.back() == '\n' || text.back() == '\r' ||
+                                     text.back() == ' ' || text.back() == '\0'))
+                text.pop_back();
+            if (plain_source(text))
+                sources[title.name] = text;
+        }
+    }
+    return sources;
+}
+
+bool append_playden_request(const std::string &title_root, const std::string &game,
+                            const Privileged &privileged)
+{
+    if (!playden_request_word(game))
+        return false;
+    const std::string dev = title_root + "/dev";
+    const std::string line = "uninstall " + game + "\n";
+    const auto write_line = [&]
+    {
+        mkdir(dev.c_str(), 0777); // there already, or made now; open says which
+        const int fd = open((dev + "/install-request.txt").c_str(),
+                            O_WRONLY | O_APPEND | O_CREAT | O_NOFOLLOW, 0666);
+        if (fd < 0)
+            return false;
+        fchmod(fd, 0666); // Playden runs as another user and deletes it when read
+        const bool ok = write(fd, line.data(), line.size()) == static_cast<ssize_t>(line.size());
+        return close(fd) == 0 && ok;
+    };
+    if (write_line())
+        return true;
+    bool ok = false;
+    if (privileged)
+        privileged(
+            [&]
+            {
+                ok = write_line();
+                return ok;
+            });
+    return ok;
+}
+
 ProtectionRules console_protection(const std::vector<VolumeSpec> &specs,
-                                   std::map<std::string, std::string> playden_titles)
+                                   std::map<std::string, std::string> playden_titles,
+                                   const std::map<std::string, std::string> &shadowmount_sources)
 {
     ProtectionRules rules;
     for (const VolumeSpec &spec : specs)
@@ -151,6 +281,8 @@ ProtectionRules console_protection(const std::vector<VolumeSpec> &specs,
             rules.playden_game_folders.push_back(spec.path + "/playden-games");
         }
     rules.playden_titles = std::move(playden_titles);
+    for (const auto &[id, source] : shadowmount_sources)
+        rules.shadowmount_sources[id] = canonical_path(rules, source);
     return rules;
 }
 
@@ -183,8 +315,12 @@ Environment make_environment()
     // /data needs the elevation; without it the title keeps its own storage.
     env.cache_dir =
         env.elevation.granted ? "/data/prospero-disk/cache" : "/download0/prospero-disk/cache";
-    env.protection = console_protection(env.specs, env.playden_titles);
     env.privileged = privileged_state();
+    std::map<std::string, std::string> sources;
+    if (env.elevation.granted)
+        sources = read_shadowmount_sources(
+            *env.fs, env.privileged, {"/user/app", "/mnt/ext0/user/app", "/mnt/ext1/user/app"});
+    env.protection = console_protection(env.specs, env.playden_titles, sources);
     if (env.elevation.granted)
     {
         TitleRemoverConfig remover;
@@ -226,6 +362,9 @@ Environment make_environment()
         remover.sleep = [](int ms) { std::this_thread::sleep_for(std::chrono::milliseconds(ms)); };
         env.remover = std::make_shared<PayloadTitleRemover>(std::move(remover));
         env.trash_dir = "/data/prospero-disk/trash"; // made by main()
+        const Privileged raised = env.privileged;
+        env.forget_playden_game = [raised](const std::string &game)
+        { return append_playden_request("/data/homebrew/FAKE77031", game, raised); };
     }
 #else
     const char *volumes = std::getenv("PD_VOLUMES");

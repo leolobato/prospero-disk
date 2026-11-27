@@ -220,6 +220,47 @@ bool Deleter::remove(const std::string &path, bool folder, int *error) const
     return ok;
 }
 
+bool Deleter::make_folder(const std::string &path, int *error) const
+{
+    if (fs_->make_folder(path, error))
+        return true;
+    if (!permission(*error) || !options_.privileged)
+        return false;
+    bool ok = false;
+    options_.privileged(
+        [&]
+        {
+            ok = fs_->make_folder(path, error);
+            return ok;
+        });
+    return ok;
+}
+
+std::string Deleter::trash_for(const std::string &path, int *error) const
+{
+    const std::string root = root_of(options_.rules, path);
+    if (root.empty())
+    {
+        *error = EXDEV;
+        return {};
+    }
+    if (path_within(options_.trash_dir, root))
+        return options_.trash_dir;
+    // <drive>/prospero-disk/trash, each folder made if it is not there.
+    std::string trash = root;
+    for (const char *name : {"prospero-disk", "trash"})
+    {
+        trash = child_path(trash, name);
+        Entry folder;
+        int ignored = 0;
+        if (stat(trash, &folder, &ignored) && folder.type == EntryType::directory)
+            continue;
+        if (!make_folder(trash, error) && *error != EEXIST)
+            return {};
+    }
+    return trash;
+}
+
 bool Deleter::move(const std::string &from, const std::string &to, int *error) const
 {
     if (fs_->move(from, to, error))
@@ -485,7 +526,7 @@ void Deleter::delete_item(const DeleteJob &job, ItemResult &result)
     }
     if (title)
     {
-        delete_title(job, result);
+        delete_title(job, check, result);
         return;
     }
     if (!checked_ancestors(item.path, job.volume_root, result))
@@ -513,7 +554,7 @@ void Deleter::delete_item(const DeleteJob &job, ItemResult &result)
     }
 }
 
-void Deleter::delete_title(const DeleteJob &job, ItemResult &result)
+void Deleter::delete_title(const DeleteJob &job, const Check &check, ItemResult &result)
 {
     const CollectedItem &item = job.item;
     set_current("Uninstalling " + item.title_id);
@@ -546,22 +587,29 @@ void Deleter::delete_title(const DeleteJob &job, ItemResult &result)
             return;
         }
     }
-    // A Playden title's folder leaves /data/homebrew first, as Playden does:
+    // A title's folder leaves where ShadowMount looks first, as Playden does:
     // what ShadowMount can no longer find, it cannot register again.
     std::vector<std::string> folders = item.then_delete;
     std::string retired_from;
     std::string retired_to;
+    std::string retired_trash;
     std::uint64_t retired_inode = 0;
     for (std::string &path : folders)
     {
-        if (options_.trash_dir.empty() || options_.rules.homebrew.empty() ||
-            parent_of(path) != options_.rules.homebrew)
+        const bool homebrew =
+            !options_.rules.homebrew.empty() && parent_of(path) == options_.rules.homebrew;
+        const bool source = std::any_of(options_.rules.shadowmount_sources.begin(),
+                                        options_.rules.shadowmount_sources.end(),
+                                        [&](const auto &s) { return s.second == path; });
+        if (options_.trash_dir.empty() || (!homebrew && !source))
             continue;
         Entry folder;
         Entry trash;
         int error = 0;
-        if (!stat(path, &folder, &error) || folder.type != EntryType::directory ||
-            !stat(options_.trash_dir, &trash, &error) || trash.type != EntryType::directory)
+        const std::string trash_dir = trash_for(path, &error);
+        if (trash_dir.empty() || !stat(path, &folder, &error) ||
+            folder.type != EntryType::directory || !stat(trash_dir, &trash, &error) ||
+            trash.type != EntryType::directory)
         {
             if (error != 0)
                 fail(result, path, error);
@@ -570,7 +618,7 @@ void Deleter::delete_title(const DeleteJob &job, ItemResult &result)
             return;
         }
         const std::string to =
-            child_path(options_.trash_dir, item.title_id + "-" + std::to_string(folder.inode));
+            child_path(trash_dir, item.title_id + "-" + std::to_string(folder.inode));
         if (!move(path, to, &error))
         {
             fail(result, path, error);
@@ -580,6 +628,7 @@ void Deleter::delete_title(const DeleteJob &job, ItemResult &result)
         }
         retired_from = path;
         retired_to = to;
+        retired_trash = trash_dir;
         retired_inode = folder.inode;
         path = to;
     }
@@ -605,7 +654,7 @@ void Deleter::delete_title(const DeleteJob &job, ItemResult &result)
     for (const std::string &path : folders)
     {
         const bool retired = path == retired_to;
-        const std::string root = retired ? options_.trash_dir : root_of(options_.rules, path);
+        const std::string root = retired ? retired_trash : root_of(options_.rules, path);
         Entry now;
         int error = 0;
         // The folder in the trash must still be the one moved there.
@@ -623,6 +672,15 @@ void Deleter::delete_title(const DeleteJob &job, ItemResult &result)
     result.outcome = all_gone ? Outcome::removed : Outcome::partly;
     if (!all_gone)
         result.reason = "The title was uninstalled, but some of its files are left.";
+    // Playden keeps its own list of installed games: without this, it shows
+    // the game as on a disconnected drive.
+    if (all_gone && !check.playden_game.empty() && options_.forget_playden_game &&
+        !options_.forget_playden_game(check.playden_game))
+    {
+        result.reason = "Playden could not be told; uninstall the game in Playden too.";
+        if (options_.log)
+            options_.log("playden request " + check.playden_game + ": not written");
+    }
 }
 
 } // namespace hui::disk
