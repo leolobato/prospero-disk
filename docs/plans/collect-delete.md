@@ -376,3 +376,28 @@ FTP, the log had no `delete:` errors, frames stayed at 16.7 ms, and the quit
 request closed the app. Seen on the way: after the result, the list's focus
 goes back to its first row; `/user/download` is not readable by the scanner, so
 nothing in it can be collected.
+
+### Run 3 (2026-11-27, 13.60): uninstalls
+
+Two small Steam games were installed through Playden for it. Before the run,
+`/data/playden-games` was missing from the game folders (the `/data` volume row
+left main), so a game's files counted as plain files; fixed and tested.
+
+- **Strikers 1945, by its game files** (`/user/data/playden-games/1261960`):
+  uninstalled through the payload, title folder moved to the trash and deleted;
+  `/user/app`, `/user/appmeta`, `/data/homebrew` and the files gone; 673 MB
+  freed. Left behind: Playden's bottle `/data/playden/games/steam-1261960`.
+  Playden then shows the game as "Storage disconnected" with no way to remove
+  or reinstall it.
+- **Xeno Crisis, by its title** (`/user/data/homebrew/FAKE78079`): uninstalled;
+  files and bottle kept; 572 MB freed. Playden shows "Setup stopped early ·
+  Finish setup", which registers it again. `/user/app/FAKE78079` itself is
+  refused ("Uninstall this from the home screen").
+- **CONTROL Resonant, retail through ShadowMountPlus** (`/user/app/PPSA34547`,
+  `mount.lnk` to `/mnt/ext1/homebrew/CONTROL Resonant …`): the payload's
+  uninstall was accepted and confirmed, then ShadowMountPlus registered it
+  again on its next scan, about 10 s later. Its own `/api/v1/games/uninstall`
+  does the same. A title whose source sits in a scanned folder cannot stay
+  uninstalled while the source is there.
+- The payload loader on 9021 answered from inside the app (not from the LAN).
+  No `delete:` errors; the payload's `result` file stays in its folder.
